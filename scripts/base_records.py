@@ -25,8 +25,8 @@ import sys
 from dataclasses import dataclass
 from urllib.parse import parse_qs, urlparse
 
-BASE_TOKEN = "HmeubVX2UazS5RsUyK9ciK3DnJG"
-TABLE_ID = "tble8OJWkYYfuKZ5"
+BASE_TOKEN_ENV = "WECHAT_COLLECTION_BASE_TOKEN"
+TABLE_ID_ENV = "WECHAT_COLLECTION_TABLE_ID"
 
 RETRYABLE_CODES = {"500", "502", "503", "Gateway Time-out", "Bad Gateway", "Service Unavailable"}
 MAX_RETRIES = 3
@@ -42,6 +42,19 @@ class LarkResult:
     stdout: str
     stderr: str
     returncode: int
+
+
+def _base_config() -> tuple[str | None, str | None, str | None]:
+    base_token = os.environ.get(BASE_TOKEN_ENV)
+    table_id = os.environ.get(TABLE_ID_ENV)
+    missing = []
+    if not base_token:
+        missing.append(BASE_TOKEN_ENV)
+    if not table_id:
+        missing.append(TABLE_ID_ENV)
+    if missing:
+        return None, None, "missing_env: " + ", ".join(missing)
+    return base_token, table_id, None
 
 
 def _run_lark(argv: list[str], timeout: int = 15) -> subprocess.CompletedProcess | LarkResult:
@@ -139,10 +152,13 @@ def _first_record_id(parsed: dict) -> str | None:
 def _search_duplicate(field_name: str, keyword: str) -> dict:
     if not keyword:
         return {"found": False, "record_id": None, "error": "empty_keyword"}
+    base_token, table_id, config_error = _base_config()
+    if config_error:
+        return {"found": False, "record_id": None, "error": config_error}
 
     r = _run_lark([
         "base", "+record-search", "--as", "user",
-        "--base-token", BASE_TOKEN, "--table-id", TABLE_ID,
+        "--base-token", base_token, "--table-id", table_id,
         "--format", "json",
         "--json", json.dumps({
             "keyword": keyword,
@@ -212,10 +228,14 @@ def search_duplicate_by_title(title: str) -> dict:
 
 def create_record(fields: dict) -> dict:
     """写入记录到飞书 Base，带重试"""
+    base_token, table_id, config_error = _base_config()
+    if config_error:
+        return {"ok": False, "record_id": None, "error": config_error}
+
     for attempt in range(MAX_RETRIES):
         r = _run_lark([
             "base", "+record-upsert", "--as", "user",
-            "--base-token", BASE_TOKEN, "--table-id", TABLE_ID,
+            "--base-token", base_token, "--table-id", table_id,
             "--json", json.dumps(fields, ensure_ascii=False),
         ])
 
@@ -250,6 +270,10 @@ def create_record(fields: dict) -> dict:
 
 def update_stats(record_id: str, stats: dict) -> dict:
     """更新记录的统计数据"""
+    base_token, table_id, config_error = _base_config()
+    if config_error:
+        return {"ok": False, "error": config_error}
+
     # 只更新 stats 相关字段，不覆盖元数据
     fields = {}
     for key in ("阅读数", "点赞数", "转发数", "统计来源", "统计更新时间", "数据状态"):
@@ -262,7 +286,7 @@ def update_stats(record_id: str, stats: dict) -> dict:
     for attempt in range(MAX_RETRIES):
         r = _run_lark([
             "base", "+record-upsert", "--as", "user",
-            "--base-token", BASE_TOKEN, "--table-id", TABLE_ID,
+            "--base-token", base_token, "--table-id", table_id,
             "--record-id", record_id,
             "--json", json.dumps(fields, ensure_ascii=False),
         ])
@@ -288,9 +312,13 @@ def update_stats(record_id: str, stats: dict) -> dict:
 
 def get_field_list() -> list[dict]:
     """获取当前表字段结构"""
+    base_token, table_id, config_error = _base_config()
+    if config_error:
+        return []
+
     r = _run_lark([
         "base", "+field-list", "--as", "user",
-        "--base-token", BASE_TOKEN, "--table-id", TABLE_ID,
+        "--base-token", base_token, "--table-id", table_id,
     ])
     try:
         data = json.loads(r.stdout)

@@ -20,11 +20,19 @@ description: 微信公众号文章收藏工作流。用于收藏 mp.weixin.qq.co
 - 已知不可抓取字段不伪造。
 - 失败时有明确降级路径。
 
-## 飞书 Base 信息
+## 飞书 Base 配置
 
-- base_token: `HmeubVX2UazS5RsUyK9ciK3DnJG`
-- table_id: `tble8OJWkYYfuKZ5`
-- Base URL: `https://my.feishu.cn/base/HmeubVX2UazS5RsUyK9ciK3DnJG`
+通过环境变量配置目标 Base，不要在 public 仓库中硬编码真实资源标识：
+
+- `WECHAT_COLLECTION_BASE_TOKEN`
+- `WECHAT_COLLECTION_TABLE_ID`
+
+PowerShell 示例：
+
+```powershell
+$env:WECHAT_COLLECTION_BASE_TOKEN="your_feishu_base_token"
+$env:WECHAT_COLLECTION_TABLE_ID="your_feishu_table_id"
+```
 
 字段映射：
 
@@ -43,7 +51,7 @@ description: 微信公众号文章收藏工作流。用于收藏 mp.weixin.qq.co
 写入 Base 前先读字段结构：
 
 ```bash
-lark-cli base +field-list --as user --base-token HmeubVX2UazS5RsUyK9ciK3DnJG --table-id tble8OJWkYYfuKZ5
+lark-cli base +field-list --as user --base-token "$env:WECHAT_COLLECTION_BASE_TOKEN" --table-id "$env:WECHAT_COLLECTION_TABLE_ID"
 ```
 
 ## 标准收藏流程
@@ -97,8 +105,8 @@ node scripts/search_wechat.js "文章标题或关键词" -n 5 -r
 
 ```bash
 lark-cli base +record-search --as user \
-  --base-token HmeubVX2UazS5RsUyK9ciK3DnJG \
-  --table-id tble8OJWkYYfuKZ5 \
+  --base-token "$WECHAT_COLLECTION_BASE_TOKEN" \
+  --table-id "$WECHAT_COLLECTION_TABLE_ID" \
   --format json \
   --json '{"keyword":"https://mp.weixin.qq.com/s/...","search_fields":["文章链接"],"select_fields":["文章标题","公众号名称","文章链接"],"limit":10}'
 ```
@@ -110,8 +118,8 @@ lark-cli base +record-search --as user \
 
 ```bash
 lark-cli base +record-upsert --as user \
-  --base-token HmeubVX2UazS5RsUyK9ciK3DnJG \
-  --table-id tble8OJWkYYfuKZ5 \
+  --base-token "$WECHAT_COLLECTION_BASE_TOKEN" \
+  --table-id "$WECHAT_COLLECTION_TABLE_ID" \
   --json '{
     "文章标题": "文章标题",
     "公众号名称": "公众号名称或待补充",

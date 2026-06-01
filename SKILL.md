@@ -33,10 +33,19 @@ python -m pytest tests/ -v
 - 正文内容不稳定。`wechat-article-extractor` 常因登录态返回 `1005`，仅用于 Summary Mode。
 - 公众号名称是最高失败率字段（`var nickname` 命中率 ~40%）。
 
-## 飞书 Base 信息
+## 飞书 Base 配置
 
-- base_token: `HmeubVX2UazS5RsUyK9ciK3DnJG`
-- table_id: `tble8OJWkYYfuKZ5`
+通过环境变量配置目标 Base，不要在 public 仓库中硬编码真实资源标识：
+
+- `WECHAT_COLLECTION_BASE_TOKEN`
+- `WECHAT_COLLECTION_TABLE_ID`
+
+PowerShell 示例：
+
+```powershell
+$env:WECHAT_COLLECTION_BASE_TOKEN="your_feishu_base_token"
+$env:WECHAT_COLLECTION_TABLE_ID="your_feishu_table_id"
+```
 
 ## 脚本清单
 
