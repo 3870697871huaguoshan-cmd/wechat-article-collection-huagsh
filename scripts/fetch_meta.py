@@ -7,7 +7,7 @@ fetch_meta.py — 抓取微信文章元数据（og:title / og:description / var 
     python fetch_meta.py --json '<url>'
 
 输出 (JSON):
-    {"ok": true, "title": "...", "description": "...", "nickname": "...", "error": null}
+    {"ok": true, "title": "...", "description": "...", "nickname": "...", "author": "...", "error": null}
 """
 
 import subprocess
@@ -44,7 +44,7 @@ class _MetaParser(HTMLParser):
         attr_map = {k.lower(): v for k, v in attrs if v is not None}
         prop = attr_map.get("property") or attr_map.get("name")
         content = attr_map.get("content")
-        if prop and content and prop.startswith("og:"):
+        if prop and content:
             self.og[prop] = unescape(content).strip()
 
 
@@ -99,6 +99,7 @@ def fetch_meta(url: str) -> dict:
                 "title": title,
                 "description": og.get("og:description"),
                 "nickname": _re_first(NICKNAME_RE, html),
+                "author": og.get("author") or og.get("og:article:author"),
                 "error": None,
             }
 
@@ -107,6 +108,7 @@ def fetch_meta(url: str) -> dict:
         "title": None,
         "description": None,
         "nickname": None,
+        "author": None,
         "error": "无法获取文章标题：两次 curl 均未能提取 og:title",
     }
 

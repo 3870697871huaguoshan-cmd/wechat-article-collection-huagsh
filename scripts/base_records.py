@@ -18,6 +18,7 @@ base_records.py — 飞书 Base 操作封装
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import time
@@ -32,6 +33,7 @@ RETRYABLE_CODES = {"500", "502", "503", "Gateway Time-out", "Bad Gateway", "Serv
 MAX_RETRIES = 3
 RETRY_DELAYS = [2, 4, 8]
 SEARCH_KEYWORD_LIMIT = 50
+LIST_PAGE_LIMIT = 200
 LARK_CLI_BIN = None
 
 
@@ -149,6 +151,81 @@ def _first_record_id(parsed: dict) -> str | None:
     return None
 
 
+def _normalize_url_cell(value: object) -> str:
+    """把 Base URL 文本或 Markdown 链接展示值归一化为 URL。"""
+    if value is None:
+        return ""
+    if isinstance(value, dict):
+        return str(value.get("link") or value.get("url") or value.get("text") or "").strip()
+    text = str(value).strip()
+    md = re.search(r"\((https?://[^)]+)\)", text)
+    if md:
+        return md.group(1).strip()
+    return text
+
+
+def _normalize_url_for_compare(url: str) -> str:
+    return (url or "").strip().rstrip("/")
+
+
+def _record_list_page(offset: int = 0, limit: int = LIST_PAGE_LIMIT) -> dict:
+    base_token, table_id, config_error = _base_config()
+    if config_error:
+        return {"ok": False, "records": [], "has_more": False, "error": config_error}
+
+    r = _run_lark([
+        "base", "+record-list", "--as", "user",
+        "--base-token", base_token, "--table-id", table_id,
+        "--format", "json",
+        "--field-id", "文章标题",
+        "--field-id", "公众号名称",
+        "--field-id", "文章链接",
+        "--limit", str(limit),
+        "--offset", str(offset),
+    ])
+
+    combined = (r.stdout or "") + (r.stderr or "")
+    if r.returncode != 0:
+        return {"ok": False, "records": [], "has_more": False, "error": combined[:500] or "record_list_failed"}
+
+    try:
+        data = json.loads(r.stdout)
+    except json.JSONDecodeError:
+        return {"ok": False, "records": [], "has_more": False, "error": "invalid_json"}
+    if not data.get("ok"):
+        return {"ok": False, "records": [], "has_more": False, "error": str(data.get("error"))[:500]}
+
+    inner = data.get("data", {})
+    fields = inner.get("fields") or []
+    record_ids = inner.get("record_id_list") or []
+    rows = inner.get("data") or inner.get("records") or []
+    records = []
+    for i, row in enumerate(rows):
+        if isinstance(row, dict):
+            fields_map = row.get("fields", row)
+            rid = row.get("record_id") or row.get("id") or (record_ids[i] if i < len(record_ids) else None)
+        else:
+            fields_map = {fields[j]: row[j] for j in range(min(len(fields), len(row)))}
+            rid = record_ids[i] if i < len(record_ids) else None
+        records.append({"record_id": rid, "fields": fields_map})
+
+    return {"ok": True, "records": records, "has_more": bool(inner.get("has_more")), "error": None}
+
+
+def _scan_duplicate(match_fn) -> dict:
+    offset = 0
+    while True:
+        page = _record_list_page(offset=offset)
+        if not page["ok"]:
+            return {"found": False, "record_id": None, "error": page["error"]}
+        for record in page["records"]:
+            if match_fn(record["fields"]):
+                return {"found": True, "record_id": record.get("record_id"), "error": None}
+        if not page["has_more"]:
+            return {"found": False, "record_id": None, "error": None}
+        offset += LIST_PAGE_LIMIT
+
+
 def _search_duplicate(field_name: str, keyword: str) -> dict:
     if not keyword:
         return {"found": False, "record_id": None, "error": "empty_keyword"}
@@ -208,6 +285,12 @@ def _extract_record_id(data: dict) -> str | None:
     record = inner.get("record")
     if isinstance(record, dict):
         return record.get("record_id") or record.get("id")
+    records = inner.get("records")
+    if isinstance(records, list) and records and isinstance(records[0], dict):
+        return records[0].get("record_id") or records[0].get("id")
+    record_ids = inner.get("record_id_list")
+    if isinstance(record_ids, list) and record_ids:
+        return record_ids[0]
     return inner.get("record_id") or inner.get("id")
 
 
@@ -215,15 +298,20 @@ def _extract_record_id(data: dict) -> str | None:
 
 def search_duplicate_by_url(url: str) -> dict:
     """按文章链接查重"""
-    keyword = _url_search_keyword(url)
-    if not keyword:
-        return {"found": False, "record_id": None, "error": "unable_to_extract_url_keyword"}
-    return _search_duplicate("文章链接", keyword)
+    target = _normalize_url_for_compare(url)
+    if not target:
+        return {"found": False, "record_id": None, "error": "empty_url"}
+    return _scan_duplicate(
+        lambda fields: _normalize_url_for_compare(_normalize_url_cell(fields.get("文章链接"))) == target
+    )
 
 
 def search_duplicate_by_title(title: str) -> dict:
     """按文章标题查重"""
-    return _search_duplicate("文章标题", _truncate_search_keyword(title))
+    target = (title or "").strip()
+    if not target:
+        return {"found": False, "record_id": None, "error": "empty_title"}
+    return _scan_duplicate(lambda fields: str(fields.get("文章标题") or "").strip() == target)
 
 
 def create_record(fields: dict) -> dict:
@@ -242,9 +330,16 @@ def create_record(fields: dict) -> dict:
         try:
             data = json.loads(r.stdout)
             if r.returncode == 0 and data.get("ok"):
+                record_id = _extract_record_id(data)
+                if not record_id and fields.get("文章链接"):
+                    dup = search_duplicate_by_url(str(fields["文章链接"]))
+                    record_id = dup.get("record_id") if dup.get("found") else None
+                if not record_id and fields.get("文章标题"):
+                    dup = search_duplicate_by_title(str(fields["文章标题"]))
+                    record_id = dup.get("record_id") if dup.get("found") else None
                 return {
                     "ok": True,
-                    "record_id": _extract_record_id(data),
+                    "record_id": record_id,
                     "error": None,
                 }
         except json.JSONDecodeError:

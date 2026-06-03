@@ -36,8 +36,11 @@
 |---|---|
 | `LARK_CLI_BIN` | 指定 `lark-cli` 可执行文件路径 |
 | `WECHAT_ARTICLE_EXTRACTOR_DIR` | Summary Mode 的 extractor 脚本目录 |
+| `WECHAT_STATS_PROVIDER` | 默认统计 provider：`none` / `official` / `wechat_session` / `third_party` |
+| `WECHAT_STATS_FALLBACK_CHAIN` | 显式统计降级链，如 `wechat_session,third_party,none` |
 | `WECHAT_SESSION_COOKIE` | 仅在显式使用 `wechat_session` provider 时临时提供 |
 | `WECHAT_WXTOKEN` | 微信 `getappmsgext` 的 wxtoken，默认 `777` |
+| `WECHAT_STATS_API_URL` | `third_party` provider 的 HTTP API 地址 |
 
 PowerShell 示例：
 
@@ -66,6 +69,12 @@ python scripts/collect_article.py "https://mp.weixin.qq.com/s/..." --summary
 python scripts/fetch_stats.py --url "https://mp.weixin.qq.com/s/..." --provider none
 ```
 
+收藏时显式抓取统计：
+
+```bash
+python scripts/collect_article.py "https://mp.weixin.qq.com/s/..." --stats-provider wechat_session
+```
+
 运行测试：
 
 ```bash
@@ -82,7 +91,7 @@ python -m pytest tests/ -q
 
 ## Security Notes
 
-- 阅读数、点赞数、转发数不能从普通 HTML 稳定抓取。
+- 阅读数、点赞数、转发数不能从普通 HTML 稳定抓取；无 provider 时会写 0，但 `数据状态` 为 `缺统计数据`。
 - `wechat_session` provider 只从环境变量读取临时 Cookie/session 信息，不保存、不打印。
 - public 仓库中不要提交 `.env`、真实 Cookie、API Key 或账号密码。
 

@@ -31,6 +31,7 @@ import json
 import os
 import subprocess
 import re
+from datetime import datetime
 from urllib.parse import urlparse
 
 # 确保可以导入同目录模块
@@ -39,6 +40,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import fetch_meta
 import search_enrich
 import base_records
+import fetch_stats
 
 
 def normalize_wechat_url(url: str) -> str:
@@ -72,11 +74,67 @@ def _compute_data_status(meta_ok: bool, source: str) -> str:
     return "缺统计数据"
 
 
+def _now_lark_datetime() -> str:
+    return datetime.now().strftime("%Y-%m-%d %H:%M")
+
+
+def _auto_topic(title: str, description: str = "") -> str:
+    text = f"{title} {description}".lower()
+    rules = [
+        ("AI", ["ai", "codex", "claude", "agent", "openai", "人工智能", "大模型"]),
+        ("编程", ["代码", "编程", "开发", "github", "python", "javascript"]),
+        ("效率工具", ["效率", "工具", "工作流", "自动化", "hermes"]),
+        ("产品", ["产品", "案例", "使用案例", "use cases"]),
+    ]
+    hits = [name for name, keywords in rules if any(k in text for k in keywords)]
+    return " / ".join(dict.fromkeys(hits[:3]))
+
+
+def _auto_keywords(title: str, description: str = "") -> str:
+    text = f"{title} {description}"
+    candidates = re.findall(r"[A-Za-z][A-Za-z0-9+#.-]{1,}|[\u4e00-\u9fff]{2,6}", text)
+    stop = {"官方提供", "最佳使用", "使用案例", "最近我在", "发现它", "专门有"}
+    seen = []
+    for item in candidates:
+        if item in stop:
+            continue
+        if item.lower() not in {x.lower() for x in seen}:
+            seen.append(item)
+        if len(seen) >= 8:
+            break
+    return " / ".join(seen)
+
+
+def _stats_fields(url: str, provider: str, fallback_chain: str | None = None) -> tuple[dict, dict | None]:
+    timestamp = _now_lark_datetime()
+    if provider == "none":
+        return {
+            "阅读数": 0,
+            "点赞数": 0,
+            "转发数": 0,
+            "统计来源": "none",
+            "统计更新时间": timestamp,
+        }, None
+
+    stats = fetch_stats.fetch_stats(url, provider=provider, fallback_chain=fallback_chain)
+    fields = {
+        "阅读数": int(stats.get("read_count") or 0),
+        "点赞数": int(stats.get("like_count") or 0),
+        "转发数": int(stats.get("share_count") or 0),
+        "统计来源": stats.get("provider") or provider,
+        "统计更新时间": timestamp,
+    }
+    fields["数据状态"] = "完整" if stats.get("ok") and not stats.get("partial") else "统计获取失败"
+    return fields, stats
+
+
 def collect_article(
     url: str,
     topic: str = "",
     keywords: str = "",
     summary: bool = False,
+    stats_provider: str | None = None,
+    fallback_chain: str | None = None,
 ) -> dict:
     """收藏一篇微信文章"""
     try:
@@ -110,7 +168,7 @@ def collect_article(
         }
 
     # Step 2: 公众号名称补全
-    nickname = meta.get("nickname")
+    nickname = meta.get("nickname") or meta.get("author")
     if not nickname:
         enrich = search_enrich.enrich_nickname(meta["title"], url)
         if enrich["ok"]:
@@ -156,19 +214,24 @@ def collect_article(
         }
 
     # Step 4: 写入
+    stats_provider = stats_provider or os.environ.get("WECHAT_STATS_PROVIDER", "none")
+    fallback_chain = fallback_chain or os.environ.get("WECHAT_STATS_FALLBACK_CHAIN")
+    topic = topic or _auto_topic(meta["title"], meta.get("description") or "")
+    keywords = keywords or _auto_keywords(meta["title"], meta.get("description") or "")
     data_status = _compute_data_status(True, nickname)
+    stat_fields, stats_result = _stats_fields(url, stats_provider, fallback_chain)
+    if data_status != "缺公众号名称" and stat_fields.get("数据状态"):
+        data_status = stat_fields["数据状态"]
     fields = {
         "文章标题": meta["title"],
         "公众号名称": nickname,
         "文章链接": url,
         "主题关键词": topic,
         "文章关键词": keywords,
-        "阅读数": 0,
-        "点赞数": 0,
-        "转发数": 0,
-        "统计来源": "none",
-        "数据状态": data_status,
+        "收藏时间": _now_lark_datetime(),
     }
+    fields.update(stat_fields)
+    fields["数据状态"] = data_status
     result = base_records.create_record(fields)
     if not result["ok"]:
         return {
@@ -196,6 +259,8 @@ def collect_article(
         "message": msg,
         "summary": None,
     }
+    if stats_result is not None:
+        output["stats"] = stats_result
 
     # Step 5: Summary Mode (可选)
     if summary:
@@ -242,9 +307,18 @@ def main():
     parser.add_argument("--topic", default="", help="主题关键词")
     parser.add_argument("--keywords", default="", help="文章关键词")
     parser.add_argument("--summary", action="store_true", help="同时生成摘要")
+    parser.add_argument("--stats-provider", default=None, help="统计 provider: none/official/wechat_session/third_party")
+    parser.add_argument("--fallback-chain", default=None, help="统计 provider 降级链")
     args = parser.parse_args()
 
-    result = collect_article(args.url, args.topic, args.keywords, args.summary)
+    result = collect_article(
+        args.url,
+        args.topic,
+        args.keywords,
+        args.summary,
+        args.stats_provider,
+        args.fallback_chain,
+    )
     print(json.dumps(result, ensure_ascii=False, indent=2))
     sys.exit(0 if result["ok"] else 1)
 

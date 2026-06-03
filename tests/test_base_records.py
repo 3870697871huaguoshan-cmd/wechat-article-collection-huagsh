@@ -44,6 +44,19 @@ def _search_response(record_ids: list[str]) -> str:
     }, ensure_ascii=False)
 
 
+def _record_list_response(rows: list, record_ids: list[str] | None = None, has_more: bool = False) -> str:
+    """生成 +record-list 的 JSON 响应"""
+    return json.dumps({
+        "ok": True,
+        "data": {
+            "data": rows,
+            "record_id_list": record_ids or [],
+            "fields": ["文章标题", "公众号名称", "文章链接"],
+            "has_more": has_more,
+        }
+    }, ensure_ascii=False)
+
+
 def _upsert_response(record_id: str = "recxxx") -> str:
     return json.dumps({
         "ok": True,
@@ -56,68 +69,65 @@ class TestSearchDuplicate:
 
     def test_search_url_found(self):
         """用例: 链接查重命中 → found=True, 有 record_id"""
-        stdout = _search_response(["recABC123"])
+        stdout = _record_list_response([
+            ["测试文章", "测试公众号", "[点击阅读](https://mp.weixin.qq.com/s/test)"],
+        ], ["recABC123"])
         with patch.dict("os.environ", TEST_ENV, clear=False), \
              patch.object(base_records, "_run_lark", return_value=_mock_run(stdout)) as run_mock:
             result = base_records.search_duplicate_by_url("https://mp.weixin.qq.com/s/test")
             assert result["found"] is True
             assert result["record_id"] == "recABC123"
-            payload = json.loads(run_mock.call_args.args[0][-1])
-            assert payload["keyword"] == "test"
+            assert "+record-list" in run_mock.call_args.args[0]
 
-    def test_search_url_long_link_uses_short_article_id(self):
-        """用例: 长 URL 查重时不超过 record-search 的 50 字符 keyword 限制"""
-        long_url = "https://mp.weixin.qq.com/s/abcdefghijklmnopqrstuvwxyz1234567890?chksm=long-tracking"
-        stdout = _search_response([])
+    def test_search_url_direct_string_found(self):
+        """用例: Base URL 字段返回纯字符串时也能命中"""
+        stdout = _record_list_response([
+            ["测试文章", "测试公众号", "https://mp.weixin.qq.com/s/test"],
+        ], ["recABC123"])
         with patch.dict("os.environ", TEST_ENV, clear=False), \
-             patch.object(base_records, "_run_lark", return_value=_mock_run(stdout)) as run_mock:
-            result = base_records.search_duplicate_by_url(long_url)
-            payload = json.loads(run_mock.call_args.args[0][-1])
+             patch.object(base_records, "_run_lark", return_value=_mock_run(stdout)):
+            result = base_records.search_duplicate_by_url("https://mp.weixin.qq.com/s/test")
+            assert result["found"] is True
+            assert result["record_id"] == "recABC123"
+
+    def test_search_url_exact_mismatch_not_found(self):
+        """用例: 相似 URL 不应误判重复"""
+        stdout = _record_list_response([
+            ["测试文章", "测试公众号", "https://mp.weixin.qq.com/s/test-other"],
+        ], ["recOTHER"])
+        with patch.dict("os.environ", TEST_ENV, clear=False), \
+             patch.object(base_records, "_run_lark", return_value=_mock_run(stdout)):
+            result = base_records.search_duplicate_by_url("https://mp.weixin.qq.com/s/test")
             assert result["found"] is False
-            assert payload["keyword"] == "abcdefghijklmnopqrstuvwxyz1234567890"
-            assert len(payload["keyword"]) <= 50
+            assert result["record_id"] is None
 
-    def test_search_url_query_sn_variant(self):
-        """用例: /s?sn=xxx 形式用 sn 查重"""
-        stdout = _search_response([])
+    def test_search_url_paginates_until_match(self):
+        """用例: 第一页未命中，第二页命中"""
+        first = _record_list_response([
+            ["旧文章", "测试公众号", "https://mp.weixin.qq.com/s/old"],
+        ], ["recOLD"], has_more=True)
+        second = _record_list_response([
+            ["测试文章", "测试公众号", "https://mp.weixin.qq.com/s/test"],
+        ], ["recABC123"])
         with patch.dict("os.environ", TEST_ENV, clear=False), \
-             patch.object(base_records, "_run_lark", return_value=_mock_run(stdout)) as run_mock:
-            result = base_records.search_duplicate_by_url("https://mp.weixin.qq.com/s?sn=sn123&mid=mid999")
-            payload = json.loads(run_mock.call_args.args[0][-1])
-            assert result["error"] is None
-            assert payload["keyword"] == "sn123"
+             patch.object(base_records, "_run_lark", side_effect=[_mock_run(first), _mock_run(second)]) as run_mock:
+            result = base_records.search_duplicate_by_url("https://mp.weixin.qq.com/s/test")
+            assert result["found"] is True
+            assert result["record_id"] == "recABC123"
+            assert run_mock.call_count == 2
+            assert run_mock.call_args_list[1].args[0][-1] == str(base_records.LIST_PAGE_LIMIT)
 
-    def test_search_url_query_biz_variant(self):
-        """用例: /s/?__biz=xxx 形式用 __biz 兜底查重"""
-        stdout = _search_response([])
-        with patch.dict("os.environ", TEST_ENV, clear=False), \
-             patch.object(base_records, "_run_lark", return_value=_mock_run(stdout)) as run_mock:
-            result = base_records.search_duplicate_by_url("https://mp.weixin.qq.com/s/?__biz=biz123")
-            payload = json.loads(run_mock.call_args.args[0][-1])
-            assert result["error"] is None
-            assert payload["keyword"] == "biz123"
-
-    def test_search_url_path_id_wins_over_query(self):
-        """用例: /s/abc?sn=yyy 优先使用路径文章 ID"""
-        stdout = _search_response([])
-        with patch.dict("os.environ", TEST_ENV, clear=False), \
-             patch.object(base_records, "_run_lark", return_value=_mock_run(stdout)) as run_mock:
-            result = base_records.search_duplicate_by_url("https://mp.weixin.qq.com/s/abc?sn=yyy")
-            payload = json.loads(run_mock.call_args.args[0][-1])
-            assert result["error"] is None
-            assert payload["keyword"] == "abc"
-
-    def test_search_url_empty_identifier_returns_error(self):
-        """用例: 裸 /s/ 且无 query 标识时不做无意义查重"""
+    def test_search_url_empty_returns_error(self):
+        """用例: 空链接不调用 lark-cli"""
         with patch.object(base_records, "_run_lark") as run_mock:
-            result = base_records.search_duplicate_by_url("https://mp.weixin.qq.com/s/")
+            result = base_records.search_duplicate_by_url("")
             assert result["found"] is False
-            assert result["error"] == "unable_to_extract_url_keyword"
+            assert result["error"] == "empty_url"
             run_mock.assert_not_called()
 
     def test_search_url_not_found(self):
         """用例: 链接查重未命中"""
-        stdout = _search_response([])
+        stdout = _record_list_response([])
         with patch.dict("os.environ", TEST_ENV, clear=False), \
              patch.object(base_records, "_run_lark", return_value=_mock_run(stdout)):
             result = base_records.search_duplicate_by_url("https://mp.weixin.qq.com/s/test")
@@ -126,31 +136,32 @@ class TestSearchDuplicate:
 
     def test_search_title_found(self):
         """用例: 标题查重命中"""
-        stdout = _search_response(["recXYZ789"])
+        stdout = _record_list_response([
+            ["某篇文章标题", "测试公众号", "https://mp.weixin.qq.com/s/test"],
+        ], ["recXYZ789"])
         with patch.dict("os.environ", TEST_ENV, clear=False), \
              patch.object(base_records, "_run_lark", return_value=_mock_run(stdout)):
             result = base_records.search_duplicate_by_title("某篇文章标题")
             assert result["found"] is True
             assert result["record_id"] == "recXYZ789"
 
-    def test_search_title_truncated_to_keyword_limit(self):
-        """用例: 长标题查重不超过 record-search 的 50 字符限制"""
-        long_title = "题" * 80
-        stdout = _search_response([])
-        with patch.dict("os.environ", TEST_ENV, clear=False), \
-             patch.object(base_records, "_run_lark", return_value=_mock_run(stdout)) as run_mock:
-            result = base_records.search_duplicate_by_title(long_title)
-            payload = json.loads(run_mock.call_args.args[0][-1])
-            assert result["error"] is None
-            assert payload["keyword"] == "题" * 50
-
     def test_search_title_not_found(self):
         """用例: 标题查重未命中"""
-        stdout = _search_response([])
+        stdout = _record_list_response([
+            ["另一篇文章标题", "测试公众号", "https://mp.weixin.qq.com/s/other"],
+        ], ["recOTHER"])
         with patch.dict("os.environ", TEST_ENV, clear=False), \
              patch.object(base_records, "_run_lark", return_value=_mock_run(stdout)):
             result = base_records.search_duplicate_by_title("全新文章标题")
             assert result["found"] is False
+
+    def test_search_title_empty_returns_error(self):
+        """用例: 空标题不调用 lark-cli"""
+        with patch.object(base_records, "_run_lark") as run_mock:
+            result = base_records.search_duplicate_by_title("")
+            assert result["found"] is False
+            assert result["error"] == "empty_title"
+            run_mock.assert_not_called()
 
     def test_search_failure_returns_error(self):
         """用例: 查重命令失败时返回 error，调用方不能继续写入"""

@@ -26,6 +26,12 @@ SAMPLE_HTML_NO_NICKNAME = """<html>
 <meta property="og:description" content="没有nickname"/>
 </html>"""
 
+SAMPLE_HTML_AUTHOR = """<html>
+<meta property="og:title" content="作者兜底文章"/>
+<meta property="og:description" content="有 author meta"/>
+<meta name="author" content="空格丶"/>
+</html>"""
+
 SAMPLE_HTML_EMPTY = "<html><body></body></html>"
 
 
@@ -49,6 +55,14 @@ class TestFetchMeta:
             assert result["ok"] is True
             assert result["title"] == "只有标题的文章"
             assert result["nickname"] is None
+
+    def test_author_meta_extraction(self):
+        """用例: 微信短链页常用 meta author 暴露公众号名"""
+        with patch.object(fetch_meta, "_curl_once", return_value=SAMPLE_HTML_AUTHOR):
+            result = fetch_meta.fetch_meta("https://mp.weixin.qq.com/s/test")
+            assert result["ok"] is True
+            assert result["nickname"] is None
+            assert result["author"] == "空格丶"
 
     def test_first_ua_fail_second_succeed(self):
         """用例 3: 第一次 UA 返回空，第二次成功"""

@@ -17,6 +17,9 @@ python scripts/collect_article.py "https://mp.weixin.qq.com/s/..." --topic "AI" 
 # 收藏并总结
 python scripts/collect_article.py "https://mp.weixin.qq.com/s/..." --summary
 
+# 显式获取统计数据（需配置对应 provider）
+python scripts/collect_article.py "https://mp.weixin.qq.com/s/..." --stats-provider wechat_session
+
 # 运行测试
 python -m pytest tests/ -v
 ```
@@ -25,13 +28,13 @@ python -m pytest tests/ -v
 
 - **不重复收藏** — 写入前两级查重（链接 → 标题）
 - **URL 字段格式正确** — `lark-cli base +record-upsert` 传字符串，不混用 `{link,text}`
-- **已知不可抓取字段不伪造** — 阅读/点赞/转发数默认填 `0`
+- **统计数据不误判** — 无 provider 时阅读/点赞/转发数写 `0`，但 `数据状态` 必须是 `缺统计数据`
 - **失败有明确降级路径** — 不阻塞收藏
 
 永久限制：
-- 阅读数、点赞数、转发数不能从普通 HTML 抓取。需通过 stats_provider 补录。
+- 阅读数、点赞数、转发数不能从普通 HTML 抓取。需通过 `--stats-provider` 或环境变量 `WECHAT_STATS_PROVIDER` 获取。
 - 正文内容不稳定。`wechat-article-extractor` 常因登录态返回 `1005`，仅用于 Summary Mode。
-- 公众号名称是最高失败率字段（`var nickname` 命中率 ~40%）。
+- 公众号名称优先从 `var nickname` 获取；短链页常见兜底是 `<meta name="author">` / `og:article:author`；仍失败才走搜索补全。
 
 ## 飞书 Base 配置
 
@@ -52,29 +55,30 @@ $env:WECHAT_COLLECTION_TABLE_ID="your_feishu_table_id"
 | 脚本 | 用途 | 调用时机 |
 |------|------|----------|
 | `scripts/collect_article.py` | **主入口** — 收藏文章 | 用户给链接时直接调用 |
-| `scripts/fetch_meta.py` | curl 抓 og:title/description/nickname | collect_article 内部调用 |
+| `scripts/fetch_meta.py` | curl 抓 og:title/description/nickname/author | collect_article 内部调用 |
 | `scripts/search_enrich.py` | wechat-article-search 补公众号名称 | nickname 缺失时 collect_article 内部调用 |
 | `scripts/base_records.py` | 飞书 Base 查重/写入/更新 | collect_article 内部调用 |
 | `scripts/fetch_stats.py` | 统计数据获取入口 | 用户显式请求时独立调用 |
-| `scripts/providers/official.py` | 微信公众号官方数据接口 | 占位，需配置 WECHAT_OFFICIAL_APPID/SECRET |
+| `scripts/providers/official.py` | 微信公众号官方图文统计接口 | 需配置 `WECHAT_OFFICIAL_ACCESS_TOKEN` 或 `WECHAT_OFFICIAL_APPID/SECRET`，仅适用于自有公众号 |
 | `scripts/providers/wechat_session.py` | 微信登录态接口 | 可用框架，需显式提供临时 `WECHAT_SESSION_COOKIE` 等环境变量，不保存 cookie/token |
-| `scripts/providers/third_party.py` | 第三方数据 API | 占位，需配置 WECHAT_STATS_API_KEY |
+| `scripts/providers/third_party.py` | 第三方数据 API | 需配置 `WECHAT_STATS_API_URL`，可选 `WECHAT_STATS_API_KEY` |
 
 ## 主流程
 
 ```
 用户给链接
   → python scripts/collect_article.py <url> [--summary]
-     ├─ fetch_meta: curl ×2 (换UA, 10s超时)
+     ├─ fetch_meta: curl ×2 (换UA, 10s超时，nickname/author 兜底)
      ├─ search_enrich: nickname 缺失时搜狗补全
-     ├─ base_records: 两级查重 (链接→标题)
+     ├─ base_records: 两级查重 (链接精确扫描→标题精确扫描)
+     ├─ fetch_stats: provider=none 或显式 provider
      ├─ base_records: +record-upsert 写入
      └─ --summary: extractor → og:description 降级
 ```
 
 ## 查重
 
-写入前必须查重，使用 `lark-cli base +record-search --format json`：
+写入前必须查重。当前实现使用 `lark-cli base +record-list --format json` 拉取必要字段，并在脚本内做精确匹配，避免 URL 字段被飞书返回成 Markdown 链接时 `record-search` 漏判：
 
 ```bash
 # 按链接
@@ -93,24 +97,24 @@ python scripts/base_records.py check-title "文章标题"
 | 字段名 | 类型 | 写入规则 |
 |--------|------|----------|
 | 文章标题 | 文本 | og:title → search.title → 终止 |
-| 公众号名称 | 文本 | nickname → search source → "待补充" |
+| 公众号名称 | 文本 | nickname → meta author / og:article:author → search source → "待补充" |
 | 文章链接 | 文本(URL) | 用户提供的链接，传字符串 |
 | 主题关键词 | 文本 | 用户指定或自动提取 |
 | 文章关键词 | 文本 | 用户指定或自动提取 |
-| 阅读数 | 数字 | 默认 0，由 stats_provider 更新 |
-| 点赞数 | 数字 | 默认 0，由 stats_provider 更新 |
-| 转发数 | 数字 | 默认 0，由 stats_provider 更新 |
-| 收藏时间 | 日期 | 飞书自动填充 |
-| 统计来源 | 单选 | 主流程写 `none`，由 stats_provider 更新为 `official` / `wechat_session` / `third_party` |
-| 统计更新时间 | 日期 | 仅统计数据更新时写入 |
-| 数据状态 | 单选 | 主流程写 `缺统计数据` / `缺公众号名称` / `抓取失败`，统计更新后可改为 `完整` |
+| 阅读数 | 数字 | provider 返回则写真实值；无 provider 写 0 且状态为 `缺统计数据` |
+| 点赞数 | 数字 | provider 返回则写真实值；无 provider 写 0 且状态为 `缺统计数据` |
+| 转发数 | 数字 | provider 返回则写真实值；无 provider 写 0 且状态为 `缺统计数据` |
+| 收藏时间 | 日期 | 脚本写当前时间 |
+| 统计来源 | 单选 | `none` / `official` / `wechat_session` / `third_party` |
+| 统计更新时间 | 日期 | 脚本每次写入统计字段时写当前时间 |
+| 数据状态 | 单选 | `完整` / `缺公众号名称` / `缺统计数据` / `抓取失败` / `统计获取失败`；缺公众号名称优先级最高 |
 
 ## 统计数据获取
 
 **不支持从普通 HTML 抓取。** 通过可插拔 provider 获取：
 
 ```bash
-# 默认 none（不获取）
+# 默认 none（不获取，写 0，但状态为缺统计数据）
 python scripts/fetch_stats.py --url "<链接>" --provider none
 
 # 显式指定 provider
@@ -134,9 +138,9 @@ python scripts/fetch_stats.py --url "<链接>" --provider official --fallback-ch
 | Provider | 数据来源 | 状态 | 可用字段 |
 |----------|----------|------|----------|
 | `none` | 不获取 | 可用 | 全 0 |
-| `official` | 微信公众平台图文分析 | 占位 | read_count, share_count（like_count 为 partial） |
-| `wechat_session` | 微信登录态接口 | 可用框架 | read_num, like_num（需 session；share_count 默认为 0/partial） |
-| `third_party` | 第三方 API | 占位 | 取决于具体 API |
+| `official` | 微信公众平台图文分析 | 已实现配置入口，仅自有公众号可用 | read_count, share_count（like_count 为 partial） |
+| `wechat_session` | 微信登录态接口 | 已实现，需 session | read_num, like_num（share_count 默认为 0/partial） |
+| `third_party` | 第三方 API | 已实现通用 HTTP 入口 | 取决于具体 API |
 
 ### fetch_stats 返回结构
 

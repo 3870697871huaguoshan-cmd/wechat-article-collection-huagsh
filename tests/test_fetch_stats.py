@@ -12,7 +12,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts"))
 import pytest
 from unittest.mock import patch
 import fetch_stats
-from providers import wechat_session
+from providers import official, third_party, wechat_session
 
 
 class TestFetchStats:
@@ -90,6 +90,39 @@ class TestFetchStats:
         result = fetch_stats.fetch_stats(self.URL, provider="")
         assert result["ok"] is True
         assert result["provider"] == "none"
+
+    def test_third_party_success_with_mock_http(self):
+        """用例: third_party 调用配置的 HTTP API 并解析统计字段"""
+        response = type("MockResp", (), {
+            "__enter__": lambda self: self,
+            "__exit__": lambda self, *args: None,
+            "read": lambda self: b'{"ok":true,"data":{"read_num":321,"like_num":8,"share_num":5}}',
+        })()
+        with patch.dict("os.environ", {"WECHAT_STATS_API_URL": "https://stats.example/api"}, clear=True), \
+             patch.object(third_party, "urlopen", return_value=response):
+            result = third_party.fetch(self.URL)
+            assert result["ok"] is True
+            assert result["read_count"] == 321
+            assert result["like_count"] == 8
+            assert result["share_count"] == 5
+
+    def test_official_success_with_mock_api(self):
+        """用例: official 通过标题匹配官方图文统计"""
+        article_total = {
+            "list": [{
+                "title": "测试文章",
+                "details": [{"int_page_read_count": 456, "share_count": 12}],
+            }]
+        }
+        with patch.dict("os.environ", {"WECHAT_OFFICIAL_ACCESS_TOKEN": "token"}, clear=True), \
+             patch.object(official, "_http_json_post", return_value=article_total), \
+             patch.object(official, "_article_title", return_value="测试文章"):
+            result = official.fetch(self.URL)
+            assert result["ok"] is True
+            assert result["read_count"] == 456
+            assert result["share_count"] == 12
+            assert result["like_count"] == 0
+            assert result["partial"] is True
 
 
 class TestWechatSessionProvider:
