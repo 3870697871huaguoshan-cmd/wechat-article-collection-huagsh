@@ -3,7 +3,7 @@
 collect_article.py — 微信公众号文章收藏主入口
 
 用法:
-    python collect_article.py <url> [--topic <主题>] [--keywords <关键词>] [--summary]
+    python collect_article.py <url> [--topic <主题>] [--keywords <关键词>] [--summary] [--stats-csv <CSV路径>]
 
 流程:
     1. fetch_meta       → og:title / og:description / nickname
@@ -21,7 +21,7 @@ collect_article.py — 微信公众号文章收藏主入口
       "title": "...",
       "source": "...",
       "url": "...",
-      "data_status": "完整 | 缺公众号名称 | 缺统计数据 | 抓取失败",
+      "data_status": "完整 | 缺公众号名称 | 统计获取失败 | 抓取失败",
       "message": "...",
       "summary": "..." | null
     }
@@ -105,6 +105,20 @@ def _auto_keywords(title: str, description: str = "") -> str:
     return " / ".join(seen)
 
 
+def _stats_error_message(error: str | None) -> str:
+    details = error or "unknown"
+    return (
+        "无法收藏：未获取到真实阅读/点赞/转发数据，已停止写入。\n"
+        "下一步请按固定采集路径处理：\n"
+        "1. 打开“微信公众号批量下载工具3.9”。\n"
+        "2. 将目标文章链接粘贴到工具，点击“1.获取公众号id”。\n"
+        "3. 按工具提示在微信桌面客户端内打开生成链接，等待“获取密钥成功”。\n"
+        "4. 点击“2.批量下载文章”或“2.导出文章数据”，导出包含 read_num/like_num/share_num 的 CSV。\n"
+        "5. 重新运行本脚本，并传入 --stats-csv <CSV路径>。\n"
+        f"当前错误：{details}"
+    )
+
+
 def _stats_fields(url: str, provider: str, fallback_chain: str | None = None) -> tuple[dict, dict | None]:
     timestamp = _now_lark_datetime()
     if provider == "none":
@@ -116,7 +130,7 @@ def _stats_fields(url: str, provider: str, fallback_chain: str | None = None) ->
             "share_count": 0,
             "confidence": "none",
             "partial": False,
-            "error": "stats_provider_required: use wechat_downloader_csv or another real stats provider",
+            "error": "stats_csv_required",
         }
 
     stats = fetch_stats.fetch_stats(url, provider=provider, fallback_chain=fallback_chain)
@@ -148,6 +162,7 @@ def collect_article(
     summary: bool = False,
     stats_provider: str | None = None,
     fallback_chain: str | None = None,
+    stats_csv: str | None = None,
 ) -> dict:
     """收藏一篇微信文章"""
     try:
@@ -237,7 +252,9 @@ def collect_article(
         }
 
     # Step 4: 写入
-    stats_provider = stats_provider or os.environ.get("WECHAT_STATS_PROVIDER", "none")
+    if stats_csv:
+        os.environ["WECHAT_DOWNLOADER_CSV"] = stats_csv
+    stats_provider = stats_provider or os.environ.get("WECHAT_STATS_PROVIDER", "wechat_downloader_csv")
     fallback_chain = fallback_chain or os.environ.get("WECHAT_STATS_FALLBACK_CHAIN")
     topic = topic or _auto_topic(meta["title"], meta.get("description") or "")
     keywords = keywords or _auto_keywords(meta["title"], meta.get("description") or "")
@@ -252,7 +269,7 @@ def collect_article(
             "source": nickname,
             "url": url,
             "data_status": "统计获取失败",
-            "message": f"无法收藏：未获取到真实阅读/点赞/转发数据，已停止写入。{(stats_result or {}).get('error', '')}",
+            "message": _stats_error_message((stats_result or {}).get("error")),
             "summary": None,
             "stats": stats_result,
         }
@@ -346,8 +363,9 @@ def main():
     parser.add_argument("--topic", default="", help="主题关键词")
     parser.add_argument("--keywords", default="", help="文章关键词")
     parser.add_argument("--summary", action="store_true", help="同时生成摘要")
-    parser.add_argument("--stats-provider", default=None, help="统计 provider: wechat_downloader_csv/official/wechat_session/third_party")
-    parser.add_argument("--fallback-chain", default=None, help="统计 provider 降级链")
+    parser.add_argument("--stats-csv", default=None, help="本地下载工具导出的文章数据 CSV 路径")
+    parser.add_argument("--stats-provider", default=None, help=argparse.SUPPRESS)
+    parser.add_argument("--fallback-chain", default=None, help=argparse.SUPPRESS)
     args = parser.parse_args()
 
     result = collect_article(
@@ -357,6 +375,7 @@ def main():
         args.summary,
         args.stats_provider,
         args.fallback_chain,
+        args.stats_csv,
     )
     print(json.dumps(result, ensure_ascii=False, indent=2))
     sys.exit(0 if result["ok"] else 1)

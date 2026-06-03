@@ -216,16 +216,31 @@ class TestCollectArticle:
             assert result["status"] == "failed"
 
     def test_missing_stats_provider_stops_write(self):
-        """用例: 未配置真实统计 provider → 停止写入，不写 0"""
+        """用例: 未准备统计 CSV → 停止写入，不写 0，并给出操作路径"""
         with patch.object(collect_article.fetch_meta, "fetch_meta", return_value=self._mock_meta()), \
              patch.object(collect_article.base_records, "search_duplicate_by_url", return_value=self._mock_dup_not_found()), \
              patch.object(collect_article.base_records, "search_duplicate_by_title", return_value=self._mock_dup_not_found()), \
              patch.object(collect_article.base_records, "create_record") as create_mock:
-            result = collect_article.collect_article(self.URL)
+            with patch.dict("os.environ", {}, clear=True):
+                result = collect_article.collect_article(self.URL)
             assert result["ok"] is False
             assert result["data_status"] == "统计获取失败"
-            assert "stats_provider_required" in result["message"]
+            assert "微信公众号批量下载工具3.9" in result["message"]
+            assert "--stats-csv" in result["message"]
             create_mock.assert_not_called()
+
+    def test_stats_csv_argument_sets_env_and_collects(self):
+        """用例: stats_csv 参数会配置 CSV 路径并完成写入"""
+        with patch.object(collect_article.fetch_meta, "fetch_meta", return_value=self._mock_meta()), \
+             patch.object(collect_article.fetch_stats, "fetch_stats", return_value=self._mock_stats_success()) as stats_mock, \
+             patch.object(collect_article.base_records, "search_duplicate_by_url", return_value=self._mock_dup_not_found()), \
+             patch.object(collect_article.base_records, "search_duplicate_by_title", return_value=self._mock_dup_not_found()), \
+             patch.object(collect_article.base_records, "create_record", return_value=self._mock_create_success()):
+            with patch.dict("os.environ", {}, clear=True):
+                result = collect_article.collect_article(self.URL, stats_csv="D:/export.csv")
+                assert result["ok"] is True
+                assert os.environ["WECHAT_DOWNLOADER_CSV"] == "D:/export.csv"
+                assert stats_mock.call_args.kwargs["provider"] == "wechat_downloader_csv"
 
 
 class TestSummaryFallback:
