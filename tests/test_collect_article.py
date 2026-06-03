@@ -42,13 +42,26 @@ class TestCollectArticle:
     def _mock_create_success(self):
         return {"ok": True, "record_id": "recNEW001", "error": None}
 
+    def _mock_stats_success(self, provider="wechat_downloader_csv"):
+        return {
+            "ok": True,
+            "provider": provider,
+            "read_count": 123,
+            "like_count": 9,
+            "share_count": 2,
+            "confidence": "high",
+            "partial": False,
+            "error": None,
+        }
+
     def test_collect_success(self):
-        """用例: 完整收藏成功 — 有 nickname"""
+        """用例: 完整收藏成功 — 有 nickname + 真实统计数据"""
         with patch.object(collect_article.fetch_meta, "fetch_meta", return_value=self._mock_meta()), \
+             patch.object(collect_article.fetch_stats, "fetch_stats", return_value=self._mock_stats_success()), \
              patch.object(collect_article.base_records, "search_duplicate_by_url", return_value=self._mock_dup_not_found()), \
              patch.object(collect_article.base_records, "search_duplicate_by_title", return_value=self._mock_dup_not_found()), \
              patch.object(collect_article.base_records, "create_record", return_value=self._mock_create_success()) as create_mock:
-            result = collect_article.collect_article(self.URL, topic="AI", keywords="Agent")
+            result = collect_article.collect_article(self.URL, topic="AI", keywords="Agent", stats_provider="wechat_downloader_csv")
             assert result["ok"] is True
             assert result["status"] == "created"
             assert result["title"] == "测试文章"
@@ -58,19 +71,21 @@ class TestCollectArticle:
             fields = create_mock.call_args.args[0]
             assert fields["收藏时间"]
             assert fields["统计更新时间"]
-            assert fields["统计来源"] == "none"
-            assert fields["数据状态"] == "缺统计数据"
+            assert fields["统计来源"] == "wechat_session"
+            assert fields["数据状态"] == "完整"
+            assert fields["阅读数"] == 123
 
     def test_collect_uses_author_as_source(self):
         """用例: 无 nickname 时使用 meta author 作为公众号名称"""
         meta = self._mock_meta(nickname=None)
         meta["author"] = "作者公众号"
         with patch.object(collect_article.fetch_meta, "fetch_meta", return_value=meta), \
+             patch.object(collect_article.fetch_stats, "fetch_stats", return_value=self._mock_stats_success()), \
              patch.object(collect_article.search_enrich, "enrich_nickname") as enrich_mock, \
              patch.object(collect_article.base_records, "search_duplicate_by_url", return_value=self._mock_dup_not_found()), \
              patch.object(collect_article.base_records, "search_duplicate_by_title", return_value=self._mock_dup_not_found()), \
              patch.object(collect_article.base_records, "create_record", return_value=self._mock_create_success()):
-            result = collect_article.collect_article(self.URL)
+            result = collect_article.collect_article(self.URL, stats_provider="wechat_downloader_csv")
             assert result["ok"] is True
             assert result["source"] == "作者公众号"
             enrich_mock.assert_not_called()
@@ -102,58 +117,47 @@ class TestCollectArticle:
             assert fields["统计来源"] == "wechat_session"
             assert fields["数据状态"] == "完整"
 
-    def test_collect_missing_source_status_not_overwritten_by_stats_failure(self):
-        """用例: 缺公众号名称优先，不被统计失败覆盖"""
+    def test_collect_missing_source_stops_write(self):
+        """用例: 缺公众号名称时停止写入，不写待补充"""
         meta = self._mock_meta(nickname=None)
         enrich_result = {"ok": False, "source": None, "candidates": [], "method": "no_results"}
-        stats = {
-            "ok": False,
-            "provider": "wechat_session",
-            "read_count": 0,
-            "like_count": 0,
-            "share_count": 0,
-            "confidence": "none",
-            "partial": False,
-            "error": "not_configured",
-        }
         with patch.object(collect_article.fetch_meta, "fetch_meta", return_value=meta), \
              patch.object(collect_article.search_enrich, "enrich_nickname", return_value=enrich_result), \
-             patch.object(collect_article.fetch_stats, "fetch_stats", return_value=stats), \
              patch.object(collect_article.base_records, "search_duplicate_by_url", return_value=self._mock_dup_not_found()), \
              patch.object(collect_article.base_records, "search_duplicate_by_title", return_value=self._mock_dup_not_found()), \
-             patch.object(collect_article.base_records, "create_record", return_value=self._mock_create_success()) as create_mock:
-            result = collect_article.collect_article(self.URL, stats_provider="wechat_session")
-            fields = create_mock.call_args.args[0]
-            assert result["source"] == "待补充"
+             patch.object(collect_article.base_records, "create_record") as create_mock:
+            result = collect_article.collect_article(self.URL, stats_provider="wechat_downloader_csv")
+            assert result["ok"] is False
             assert result["data_status"] == "缺公众号名称"
-            assert fields["数据状态"] == "缺公众号名称"
+            create_mock.assert_not_called()
 
     def test_collect_no_nickname_enrich_succeeds(self):
         """用例: 无 nickname，search 补全成功"""
         meta = self._mock_meta(nickname=None)
         enrich_result = {"ok": True, "source": "搜狗公众号", "candidates": ["搜狗公众号"], "method": "single"}
         with patch.object(collect_article.fetch_meta, "fetch_meta", return_value=meta), \
+             patch.object(collect_article.fetch_stats, "fetch_stats", return_value=self._mock_stats_success()), \
              patch.object(collect_article.search_enrich, "enrich_nickname", return_value=enrich_result), \
              patch.object(collect_article.base_records, "search_duplicate_by_url", return_value=self._mock_dup_not_found()), \
              patch.object(collect_article.base_records, "search_duplicate_by_title", return_value=self._mock_dup_not_found()), \
              patch.object(collect_article.base_records, "create_record", return_value=self._mock_create_success()):
-            result = collect_article.collect_article(self.URL)
+            result = collect_article.collect_article(self.URL, stats_provider="wechat_downloader_csv")
             assert result["ok"] is True
             assert result["source"] == "搜狗公众号"
 
     def test_collect_no_nickname_enrich_fails(self):
-        """用例: 无 nickname，search 补全也失败"""
+        """用例: 无 nickname，search 补全也失败 → 停止写入"""
         meta = self._mock_meta(nickname=None)
         enrich_result = {"ok": False, "source": None, "candidates": [], "method": "no_results"}
         with patch.object(collect_article.fetch_meta, "fetch_meta", return_value=meta), \
              patch.object(collect_article.search_enrich, "enrich_nickname", return_value=enrich_result), \
              patch.object(collect_article.base_records, "search_duplicate_by_url", return_value=self._mock_dup_not_found()), \
              patch.object(collect_article.base_records, "search_duplicate_by_title", return_value=self._mock_dup_not_found()), \
-             patch.object(collect_article.base_records, "create_record", return_value=self._mock_create_success()):
-            result = collect_article.collect_article(self.URL)
-            assert result["ok"] is True
-            assert result["source"] == "待补充"
+             patch.object(collect_article.base_records, "create_record") as create_mock:
+            result = collect_article.collect_article(self.URL, stats_provider="wechat_downloader_csv")
+            assert result["ok"] is False
             assert result["data_status"] == "缺公众号名称"
+            create_mock.assert_not_called()
 
     def test_duplicate_by_url(self):
         """用例: 链接查重命中"""
@@ -203,12 +207,25 @@ class TestCollectArticle:
     def test_create_record_failed(self):
         """用例: 写入飞书失败"""
         with patch.object(collect_article.fetch_meta, "fetch_meta", return_value=self._mock_meta()), \
+             patch.object(collect_article.fetch_stats, "fetch_stats", return_value=self._mock_stats_success()), \
              patch.object(collect_article.base_records, "search_duplicate_by_url", return_value=self._mock_dup_not_found()), \
              patch.object(collect_article.base_records, "search_duplicate_by_title", return_value=self._mock_dup_not_found()), \
              patch.object(collect_article.base_records, "create_record", return_value={"ok": False, "error": "502"}):
-            result = collect_article.collect_article(self.URL)
+            result = collect_article.collect_article(self.URL, stats_provider="wechat_downloader_csv")
             assert result["ok"] is False
             assert result["status"] == "failed"
+
+    def test_missing_stats_provider_stops_write(self):
+        """用例: 未配置真实统计 provider → 停止写入，不写 0"""
+        with patch.object(collect_article.fetch_meta, "fetch_meta", return_value=self._mock_meta()), \
+             patch.object(collect_article.base_records, "search_duplicate_by_url", return_value=self._mock_dup_not_found()), \
+             patch.object(collect_article.base_records, "search_duplicate_by_title", return_value=self._mock_dup_not_found()), \
+             patch.object(collect_article.base_records, "create_record") as create_mock:
+            result = collect_article.collect_article(self.URL)
+            assert result["ok"] is False
+            assert result["data_status"] == "统计获取失败"
+            assert "stats_provider_required" in result["message"]
+            create_mock.assert_not_called()
 
 
 class TestSummaryFallback:
@@ -250,4 +267,4 @@ class TestDataStatus:
         assert collect_article._compute_data_status(True, "待补充") == "缺公众号名称"
 
     def test_default(self):
-        assert collect_article._compute_data_status(True, "公众号X") == "缺统计数据"
+        assert collect_article._compute_data_status(True, "公众号X") == "完整"

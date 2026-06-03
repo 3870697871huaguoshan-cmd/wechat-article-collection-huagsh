@@ -9,8 +9,9 @@ collect_article.py — 微信公众号文章收藏主入口
     1. fetch_meta       → og:title / og:description / nickname
     2. search_enrich    → 补全公众号名称（nickname 缺失时）
     3. base_records     → 两级查重 (链接 → 标题)
-    4. base_records     → 写入 Base
-    5. (可选) summary   → extractor → og:description 降级
+    4. fetch_stats      → 获取真实阅读/点赞/转发数据
+    5. base_records     → 写入 Base
+    6. (可选) summary   → extractor → og:description 降级
 
 输出:
     {
@@ -70,8 +71,7 @@ def _compute_data_status(meta_ok: bool, source: str) -> str:
         return "抓取失败"
     if source == "待补充":
         return "缺公众号名称"
-    # 默认都是缺统计数据（主流程不抓 stats）
-    return "缺统计数据"
+    return "完整"
 
 
 def _now_lark_datetime() -> str:
@@ -108,23 +108,36 @@ def _auto_keywords(title: str, description: str = "") -> str:
 def _stats_fields(url: str, provider: str, fallback_chain: str | None = None) -> tuple[dict, dict | None]:
     timestamp = _now_lark_datetime()
     if provider == "none":
-        return {
-            "阅读数": 0,
-            "点赞数": 0,
-            "转发数": 0,
-            "统计来源": "none",
-            "统计更新时间": timestamp,
-        }, None
+        return {}, {
+            "ok": False,
+            "provider": "none",
+            "read_count": 0,
+            "like_count": 0,
+            "share_count": 0,
+            "confidence": "none",
+            "partial": False,
+            "error": "stats_provider_required: use wechat_downloader_csv or another real stats provider",
+        }
 
     stats = fetch_stats.fetch_stats(url, provider=provider, fallback_chain=fallback_chain)
+    if not stats.get("ok") or stats.get("partial"):
+        return {}, stats
+
+    stats_source = stats.get("provider") or provider
+    if stats_source == "wechat_downloader_csv":
+        # The Base field is an existing single-select. Keep using the existing
+        # wechat_session option because the CSV is produced from a WeChat
+        # desktop-session credential flow.
+        stats_source = "wechat_session"
+
     fields = {
         "阅读数": int(stats.get("read_count") or 0),
         "点赞数": int(stats.get("like_count") or 0),
         "转发数": int(stats.get("share_count") or 0),
-        "统计来源": stats.get("provider") or provider,
+        "统计来源": stats_source,
         "统计更新时间": timestamp,
     }
-    fields["数据状态"] = "完整" if stats.get("ok") and not stats.get("partial") else "统计获取失败"
+    fields["数据状态"] = "完整"
     return fields, stats
 
 
@@ -174,7 +187,17 @@ def collect_article(
         if enrich["ok"]:
             nickname = enrich["source"]
         else:
-            nickname = "待补充"
+            return {
+                "ok": False,
+                "status": "failed",
+                "record_id": None,
+                "title": meta["title"],
+                "source": None,
+                "url": url,
+                "data_status": "缺公众号名称",
+                "message": "无法收藏：不能获取真实公众号名称，已停止写入以避免字段缺失。",
+                "summary": None,
+            }
 
     # Step 3: 查重
     dup = base_records.search_duplicate_by_url(url)
@@ -220,7 +243,20 @@ def collect_article(
     keywords = keywords or _auto_keywords(meta["title"], meta.get("description") or "")
     data_status = _compute_data_status(True, nickname)
     stat_fields, stats_result = _stats_fields(url, stats_provider, fallback_chain)
-    if data_status != "缺公众号名称" and stat_fields.get("数据状态"):
+    if not stats_result or not stats_result.get("ok") or stats_result.get("partial"):
+        return {
+            "ok": False,
+            "status": "failed",
+            "record_id": None,
+            "title": meta["title"],
+            "source": nickname,
+            "url": url,
+            "data_status": "统计获取失败",
+            "message": f"无法收藏：未获取到真实阅读/点赞/转发数据，已停止写入。{(stats_result or {}).get('error', '')}",
+            "summary": None,
+            "stats": stats_result,
+        }
+    if stat_fields.get("数据状态"):
         data_status = stat_fields["数据状态"]
     fields = {
         "文章标题": meta["title"],
@@ -244,9 +280,12 @@ def collect_article(
 
     # 构建消息
     msg = f"已收藏：{meta['title']}\n公众号：{nickname}\n链接：{url}"
-    if nickname == "待补充":
-        msg += "\n注意：公众号名称未能自动获取，已写为\"待补充\"，可在表格中手动补全。"
-    msg += "\n\n阅读数/点赞数/转发数默认填 0。可通过 stats_provider 补录统计数据。"
+    msg += (
+        f"\n阅读数：{stat_fields['阅读数']}"
+        f"\n点赞数：{stat_fields['点赞数']}"
+        f"\n转发数：{stat_fields['转发数']}"
+        f"\n统计来源：{stat_fields['统计来源']}"
+    )
 
     output = {
         "ok": True,
@@ -307,7 +346,7 @@ def main():
     parser.add_argument("--topic", default="", help="主题关键词")
     parser.add_argument("--keywords", default="", help="文章关键词")
     parser.add_argument("--summary", action="store_true", help="同时生成摘要")
-    parser.add_argument("--stats-provider", default=None, help="统计 provider: none/official/wechat_session/third_party")
+    parser.add_argument("--stats-provider", default=None, help="统计 provider: wechat_downloader_csv/official/wechat_session/third_party")
     parser.add_argument("--fallback-chain", default=None, help="统计 provider 降级链")
     args = parser.parse_args()
 

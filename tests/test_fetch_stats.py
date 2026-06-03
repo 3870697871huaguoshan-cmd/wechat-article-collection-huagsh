@@ -12,7 +12,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts"))
 import pytest
 from unittest.mock import patch
 import fetch_stats
-from providers import official, third_party, wechat_session
+from providers import official, third_party, wechat_session, wechat_downloader_csv
 
 
 class TestFetchStats:
@@ -172,3 +172,60 @@ class TestWechatSessionProvider:
              patch.object(wechat_session, "_http_post_json", return_value=response) as post_mock:
             wechat_session.fetch("https://mp.weixin.qq.com/s/test")
             assert "wxtoken=custom777" in post_mock.call_args.args[0]
+
+
+class TestWechatDownloaderCsvProvider:
+    """本地下载工具 CSV provider 测试"""
+
+    def test_csv_not_configured(self):
+        with patch.dict("os.environ", {}, clear=True):
+            result = wechat_downloader_csv.fetch("https://mp.weixin.qq.com/s/test")
+            assert result["ok"] is False
+            assert "WECHAT_DOWNLOADER_CSV" in result["error"]
+
+    def test_csv_success_exact_url(self, tmp_path):
+        csv_path = tmp_path / "export.csv"
+        csv_path.write_text(
+            "title,url,time,like_num,read_num,share_num,comment_count\n"
+            "测试文章,https://mp.weixin.qq.com/s/test,2026-06-03,9,123,2,0\n",
+            encoding="utf-8",
+        )
+        with patch.dict("os.environ", {"WECHAT_DOWNLOADER_CSV": str(csv_path)}, clear=True):
+            result = wechat_downloader_csv.fetch("https://mp.weixin.qq.com/s/test")
+            assert result["ok"] is True
+            assert result["read_count"] == 123
+            assert result["like_count"] == 9
+            assert result["share_count"] == 2
+            assert result["provider"] == "wechat_downloader_csv"
+
+    def test_csv_success_query_key_match(self, tmp_path):
+        csv_path = tmp_path / "export.csv"
+        row_url = "https://mp.weixin.qq.com/s?__biz=MzA&mid=1&idx=1&sn=abc&amp;chksm=xxx"
+        target_url = "https://mp.weixin.qq.com/s?__biz=MzA&mid=1&idx=1&sn=abc"
+        csv_path.write_text(
+            "title,url,time,like_num,read_num,share_num,comment_count\n"
+            f"测试文章,{row_url},2026-06-03,1,10,3,0\n",
+            encoding="utf-8",
+        )
+        with patch.dict("os.environ", {"WECHAT_DOWNLOADER_CSV": str(csv_path)}, clear=True):
+            result = wechat_downloader_csv.fetch(target_url)
+            assert result["ok"] is True
+            assert result["read_count"] == 10
+
+    def test_csv_all_zero_rejected(self, tmp_path):
+        csv_path = tmp_path / "export.csv"
+        csv_path.write_text(
+            "title,url,time,like_num,read_num,share_num,comment_count\n"
+            "测试文章,https://mp.weixin.qq.com/s/test,2026-06-03,0,0,0,0\n",
+            encoding="utf-8",
+        )
+        with patch.dict("os.environ", {"WECHAT_DOWNLOADER_CSV": str(csv_path)}, clear=True):
+            result = wechat_downloader_csv.fetch("https://mp.weixin.qq.com/s/test")
+            assert result["ok"] is False
+            assert "all zero" in result["error"]
+
+    def test_csv_file_not_found(self):
+        with patch.dict("os.environ", {"WECHAT_DOWNLOADER_CSV": "C:/missing/export.csv"}, clear=True):
+            result = wechat_downloader_csv.fetch("https://mp.weixin.qq.com/s/test")
+            assert result["ok"] is False
+            assert "FileNotFoundError" in result["error"]

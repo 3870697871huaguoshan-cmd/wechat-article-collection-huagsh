@@ -12,13 +12,13 @@ description: 微信公众号文章收藏工作流。用于收藏 mp.weixin.qq.co
 ```bash
 # 收藏文章
 cd diagnosis/wechat-article-collection-project
-python scripts/collect_article.py "https://mp.weixin.qq.com/s/..." --topic "AI" --keywords "Agent"
+python scripts/collect_article.py "https://mp.weixin.qq.com/s/..." --stats-provider wechat_downloader_csv
 
 # 收藏并总结
-python scripts/collect_article.py "https://mp.weixin.qq.com/s/..." --summary
+python scripts/collect_article.py "https://mp.weixin.qq.com/s/..." --stats-provider wechat_downloader_csv --summary
 
-# 显式获取统计数据（需配置对应 provider）
-python scripts/collect_article.py "https://mp.weixin.qq.com/s/..." --stats-provider wechat_session
+# 3.9 下载工具导出 CSV 后，配置本地 CSV 路径
+$env:WECHAT_DOWNLOADER_CSV="D:/path/to/export.csv"
 
 # 运行测试
 python -m pytest tests/ -v
@@ -28,13 +28,14 @@ python -m pytest tests/ -v
 
 - **不重复收藏** — 写入前两级查重（链接 → 标题）
 - **URL 字段格式正确** — `lark-cli base +record-upsert` 传字符串，不混用 `{link,text}`
-- **统计数据不误判** — 无 provider 时阅读/点赞/转发数写 `0`，但 `数据状态` 必须是 `缺统计数据`
-- **失败有明确降级路径** — 不阻塞收藏
+- **统计数据不误判** — 未获取到真实阅读/点赞/转发数时停止写入，不用 `0` 冒充成功
+- **字段不缺失** — 公众号名称补不到时停止写入，不写 `"待补充"`
+- **失败有明确原因** — 返回结构化错误，调用方按提示补齐授权或 CSV
 
 永久限制：
 - 阅读数、点赞数、转发数不能从普通 HTML 抓取。需通过 `--stats-provider` 或环境变量 `WECHAT_STATS_PROVIDER` 获取。
 - 正文内容不稳定。`wechat-article-extractor` 常因登录态返回 `1005`，仅用于 Summary Mode。
-- 公众号名称优先从 `var nickname` 获取；短链页常见兜底是 `<meta name="author">` / `og:article:author`；仍失败才走搜索补全。
+- 公众号名称优先从 `var nickname` 获取；短链页常见兜底是 `<meta name="author">` / `og:article:author`；仍失败才走搜索补全；补不到则不写入。
 
 ## 飞书 Base 配置
 
@@ -59,6 +60,7 @@ $env:WECHAT_COLLECTION_TABLE_ID="your_feishu_table_id"
 | `scripts/search_enrich.py` | wechat-article-search 补公众号名称 | nickname 缺失时 collect_article 内部调用 |
 | `scripts/base_records.py` | 飞书 Base 查重/写入/更新 | collect_article 内部调用 |
 | `scripts/fetch_stats.py` | 统计数据获取入口 | 用户显式请求时独立调用 |
+| `scripts/providers/wechat_downloader_csv.py` | 读取本地下载工具导出的 CSV 统计数据 | 当前首选统计 provider |
 | `scripts/providers/official.py` | 微信公众号官方图文统计接口 | 需配置 `WECHAT_OFFICIAL_ACCESS_TOKEN` 或 `WECHAT_OFFICIAL_APPID/SECRET`，仅适用于自有公众号 |
 | `scripts/providers/wechat_session.py` | 微信登录态接口 | 可用框架，需显式提供临时 `WECHAT_SESSION_COOKIE` 等环境变量，不保存 cookie/token |
 | `scripts/providers/third_party.py` | 第三方数据 API | 需配置 `WECHAT_STATS_API_URL`，可选 `WECHAT_STATS_API_KEY` |
@@ -71,7 +73,7 @@ $env:WECHAT_COLLECTION_TABLE_ID="your_feishu_table_id"
      ├─ fetch_meta: curl ×2 (换UA, 10s超时，nickname/author 兜底)
      ├─ search_enrich: nickname 缺失时搜狗补全
      ├─ base_records: 两级查重 (链接精确扫描→标题精确扫描)
-     ├─ fetch_stats: provider=none 或显式 provider
+     ├─ fetch_stats: 必须命中真实统计 provider
      ├─ base_records: +record-upsert 写入
      └─ --summary: extractor → og:description 降级
 ```
@@ -101,21 +103,22 @@ python scripts/base_records.py check-title "文章标题"
 | 文章链接 | 文本(URL) | 用户提供的链接，传字符串 |
 | 主题关键词 | 文本 | 用户指定或自动提取 |
 | 文章关键词 | 文本 | 用户指定或自动提取 |
-| 阅读数 | 数字 | provider 返回则写真实值；无 provider 写 0 且状态为 `缺统计数据` |
-| 点赞数 | 数字 | provider 返回则写真实值；无 provider 写 0 且状态为 `缺统计数据` |
-| 转发数 | 数字 | provider 返回则写真实值；无 provider 写 0 且状态为 `缺统计数据` |
+| 阅读数 | 数字 | provider 返回真实值；未命中则停止写入 |
+| 点赞数 | 数字 | provider 返回真实值；未命中则停止写入 |
+| 转发数 | 数字 | provider 返回真实值；未命中则停止写入 |
 | 收藏时间 | 日期 | 脚本写当前时间 |
-| 统计来源 | 单选 | `none` / `official` / `wechat_session` / `third_party` |
+| 统计来源 | 单选 | 使用现有选项：`official` / `wechat_session` / `third_party`；`wechat_downloader_csv` 写入 Base 时映射为 `wechat_session` |
 | 统计更新时间 | 日期 | 脚本每次写入统计字段时写当前时间 |
-| 数据状态 | 单选 | `完整` / `缺公众号名称` / `缺统计数据` / `抓取失败` / `统计获取失败`；缺公众号名称优先级最高 |
+| 数据状态 | 单选 | 成功写入时为 `完整`；失败时不写入 Base，仅在脚本输出中返回 `缺公众号名称` / `抓取失败` / `统计获取失败` |
 
 ## 统计数据获取
 
-**不支持从普通 HTML 抓取。** 通过可插拔 provider 获取：
+**不支持从普通 HTML 抓取。** 通过可插拔 provider 获取。正式收藏必须使用真实 provider；`none` 仅用于诊断，不用于写 Base。
 
 ```bash
-# 默认 none（不获取，写 0，但状态为缺统计数据）
-python scripts/fetch_stats.py --url "<链接>" --provider none
+# 3.9 下载工具：先导出文章数据 CSV，再读取本地 CSV
+$env:WECHAT_DOWNLOADER_CSV="D:/path/to/export.csv"
+python scripts/fetch_stats.py --url "<链接>" --provider wechat_downloader_csv
 
 # 显式指定 provider
 python scripts/fetch_stats.py --url "<链接>" --provider official
@@ -126,21 +129,35 @@ python scripts/fetch_stats.py --url "<链接>" --provider official --fallback-ch
 
 ### Provider 安全规则
 
-- 默认 `none`，不自动抓取
+- 收藏主流程不接受 `none`
 - 用户必须显式指定 provider
 - provider 失败时直接返回该 provider 的结构化错误，**不自动跨 provider 跳转**；只有用户显式配置 `fallback_chain` 且链路中包含 `none` 时才降级到 `none`
 - `wechat_session` 涉及 cookie/token → 不能无感知触发
 - `third_party` 涉及 API key/费用 → 不能无感知触发
 - 只有用户显式配置 `fallback_chain` 时才按链路尝试
+- `wechat_downloader_csv` 只读取本地 CSV，不运行 exe，不上传数据
 
 ### Provider 类型
 
 | Provider | 数据来源 | 状态 | 可用字段 |
 |----------|----------|------|----------|
-| `none` | 不获取 | 可用 | 全 0 |
+| `wechat_downloader_csv` | 微信公众号批量下载工具导出的本地 CSV | 已实现，当前首选；Base 统计来源写 `wechat_session` | read_count, like_count, share_count |
+| `none` | 不获取 | 仅诊断 | 全 0，不允许正式写入 |
 | `official` | 微信公众平台图文分析 | 已实现配置入口，仅自有公众号可用 | read_count, share_count（like_count 为 partial） |
 | `wechat_session` | 微信登录态接口 | 已实现，需 session | read_num, like_num（share_count 默认为 0/partial） |
 | `third_party` | 第三方 API | 已实现通用 HTTP 入口 | 取决于具体 API |
+
+### 微信下载工具 3.9 CSV 路径
+
+当用户使用“微信公众号批量下载工具3.9”时，按这个顺序执行：
+
+1. 在工具里用目标公众号任意文章链接获取公众号 ID。
+2. 按工具提示在微信桌面客户端内打开生成链接，等待“获取密钥成功”。
+3. 批量下载或导出文章数据，得到 CSV。
+4. 设置 `WECHAT_DOWNLOADER_CSV` 指向该 CSV，或设置 `WECHAT_DOWNLOADER_CSV_DIR` 指向导出目录。
+5. 再调用 `collect_article.py --stats-provider wechat_downloader_csv` 收藏目标文章。
+
+CSV 必须含 `title,url,time,like_num,read_num,share_num,comment_count`。匹配优先按 URL；短链和 `/s?__biz=...&mid=...&idx=...&sn=...` 会做规范化匹配。命中行如果三项统计全为 `0`，视为无效导出，不写 Base。
 
 ### fetch_stats 返回结构
 
@@ -195,7 +212,7 @@ extractor 1005 → 降级 og:description
   "title": "文章标题",
   "source": "公众号名称或待补充",
   "url": "https://mp.weixin.qq.com/s/...",
-  "data_status": "完整 | 缺公众号名称 | 缺统计数据 | 抓取失败 | null(重复记录)",
+  "data_status": "完整 | 缺公众号名称 | 统计获取失败 | 抓取失败 | null(重复记录)",
   "message": "已收藏：...",
   "summary": null
 }
