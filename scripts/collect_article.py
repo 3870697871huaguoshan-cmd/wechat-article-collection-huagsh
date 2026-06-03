@@ -38,10 +38,14 @@ from urllib.parse import urlparse
 # 确保可以导入同目录模块
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+from runtime_env import load_env_files
 import fetch_meta
 import search_enrich
 import base_records
 import fetch_stats
+
+SKILL_VERSION = "2026-06-03.3"
+LOADED_ENV_FILES = load_env_files()
 
 
 def normalize_wechat_url(url: str) -> str:
@@ -117,6 +121,23 @@ def _stats_error_message(error: str | None) -> str:
         "5. 重新运行本脚本，并传入 --stats-csv <CSV路径>。\n"
         f"当前错误：{details}"
     )
+
+
+def diagnose_runtime() -> dict:
+    csv_path = os.environ.get("WECHAT_DOWNLOADER_CSV")
+    csv_dir = os.environ.get("WECHAT_DOWNLOADER_CSV_DIR")
+    return {
+        "ok": True,
+        "skill_version": SKILL_VERSION,
+        "loaded_env_files": LOADED_ENV_FILES,
+        "base_token_configured": bool(os.environ.get("WECHAT_COLLECTION_BASE_TOKEN")),
+        "table_id_configured": bool(os.environ.get("WECHAT_COLLECTION_TABLE_ID")),
+        "stats_csv_configured": bool(csv_path),
+        "stats_csv_exists": bool(csv_path and os.path.isfile(os.path.expanduser(csv_path))),
+        "stats_csv_dir_configured": bool(csv_dir),
+        "stats_csv_dir_exists": bool(csv_dir and os.path.isdir(os.path.expanduser(csv_dir))),
+        "default_stats_flow": "local_csv",
+    }
 
 
 def _stats_fields(url: str, provider: str, fallback_chain: str | None = None) -> tuple[dict, dict | None]:
@@ -359,14 +380,25 @@ def _generate_summary(url: str, meta: dict) -> str | None:
 def main():
     import argparse
     parser = argparse.ArgumentParser(description="收藏微信公众号文章")
-    parser.add_argument("url", help="mp.weixin.qq.com 文章链接")
+    parser.add_argument("url", nargs="?", help="mp.weixin.qq.com 文章链接")
     parser.add_argument("--topic", default="", help="主题关键词")
     parser.add_argument("--keywords", default="", help="文章关键词")
     parser.add_argument("--summary", action="store_true", help="同时生成摘要")
     parser.add_argument("--stats-csv", default=None, help="本地下载工具导出的文章数据 CSV 路径")
+    parser.add_argument("--version", action="store_true", help="输出技能版本")
+    parser.add_argument("--diagnose", action="store_true", help="输出运行环境诊断")
     parser.add_argument("--stats-provider", default=None, help=argparse.SUPPRESS)
     parser.add_argument("--fallback-chain", default=None, help=argparse.SUPPRESS)
     args = parser.parse_args()
+
+    if args.version:
+        print(SKILL_VERSION)
+        return
+    if args.diagnose:
+        print(json.dumps(diagnose_runtime(), ensure_ascii=False, indent=2))
+        return
+    if not args.url:
+        parser.error("需要提供 mp.weixin.qq.com 文章链接，或使用 --version/--diagnose")
 
     result = collect_article(
         args.url,

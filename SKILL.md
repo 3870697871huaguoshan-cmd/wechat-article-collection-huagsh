@@ -14,6 +14,10 @@ description: 微信公众号文章收藏工作流。用于收藏 mp.weixin.qq.co
 cd diagnosis/wechat-article-collection-project
 python scripts/collect_article.py "https://mp.weixin.qq.com/s/..."
 
+# 运行前诊断（Hermes 测试必须先做）
+python scripts/collect_article.py --version
+python scripts/collect_article.py --diagnose
+
 # 收藏并总结
 python scripts/collect_article.py "https://mp.weixin.qq.com/s/..." --summary
 
@@ -26,6 +30,8 @@ python -m pytest tests/ -v
 
 ## 核心原则
 
+- **先确认版本** — Hermes 测试前先运行 `--version`，必须看到 `2026-06-03.3` 或更新
+- **脚本自加载环境** — 自动读取 `~/.hermes/.env`、项目 `.env`，不依赖外层 shell 注入
 - **不重复收藏** — 写入前两级查重（链接 → 标题）
 - **URL 字段格式正确** — `lark-cli base +record-upsert` 传字符串，不混用 `{link,text}`
 - **统计数据不误判** — 未获取到真实阅读/点赞/转发数时停止写入，不用 `0` 冒充成功
@@ -39,7 +45,7 @@ python -m pytest tests/ -v
 
 ## 飞书 Base 配置
 
-通过环境变量配置目标 Base，不要在 public 仓库中硬编码真实资源标识：
+通过环境变量或 `~/.hermes/.env` 配置目标 Base，不要在 public 仓库中硬编码真实资源标识：
 
 - `WECHAT_COLLECTION_BASE_TOKEN`
 - `WECHAT_COLLECTION_TABLE_ID`
@@ -50,6 +56,20 @@ PowerShell 示例：
 $env:WECHAT_COLLECTION_BASE_TOKEN="your_feishu_base_token"
 $env:WECHAT_COLLECTION_TABLE_ID="your_feishu_table_id"
 ```
+
+Hermes `.env` 示例：
+
+```text
+WECHAT_COLLECTION_BASE_TOKEN=your_feishu_base_token
+WECHAT_COLLECTION_TABLE_ID=your_feishu_table_id
+WECHAT_DOWNLOADER_CSV=D:/path/to/export.csv
+```
+
+配置后运行 `python scripts/collect_article.py --diagnose`，确认：
+
+- `base_token_configured: true`
+- `table_id_configured: true`
+- 如已准备统计 CSV，`stats_csv_exists: true`
 
 ## 脚本清单
 
@@ -65,6 +85,7 @@ $env:WECHAT_COLLECTION_TABLE_ID="your_feishu_table_id"
 
 ```
 用户给链接
+  → python scripts/collect_article.py --version / --diagnose
   → python scripts/collect_article.py <url> [--summary]
      ├─ fetch_meta: curl ×2 (换UA, 10s超时，nickname/author 兜底)
      ├─ search_enrich: nickname 缺失时搜狗补全

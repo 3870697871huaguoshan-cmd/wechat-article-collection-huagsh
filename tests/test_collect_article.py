@@ -229,6 +229,18 @@ class TestCollectArticle:
             assert "--stats-csv" in result["message"]
             create_mock.assert_not_called()
 
+    def test_explicit_none_still_stops_write(self):
+        """用例: 即使显式传 none，也不能绕过真实统计要求"""
+        with patch.object(collect_article.fetch_meta, "fetch_meta", return_value=self._mock_meta()), \
+             patch.object(collect_article.base_records, "search_duplicate_by_url", return_value=self._mock_dup_not_found()), \
+             patch.object(collect_article.base_records, "search_duplicate_by_title", return_value=self._mock_dup_not_found()), \
+             patch.object(collect_article.base_records, "create_record") as create_mock:
+            result = collect_article.collect_article(self.URL, stats_provider="none")
+            assert result["ok"] is False
+            assert result["data_status"] == "统计获取失败"
+            assert "stats_csv_required" in result["message"]
+            create_mock.assert_not_called()
+
     def test_stats_csv_argument_sets_env_and_collects(self):
         """用例: stats_csv 参数会配置 CSV 路径并完成写入"""
         with patch.object(collect_article.fetch_meta, "fetch_meta", return_value=self._mock_meta()), \
@@ -283,3 +295,22 @@ class TestDataStatus:
 
     def test_default(self):
         assert collect_article._compute_data_status(True, "公众号X") == "完整"
+
+
+class TestRuntimeDiagnostics:
+    def test_diagnose_runtime_masks_sensitive_values(self):
+        with patch.dict(
+            "os.environ",
+            {
+                "WECHAT_COLLECTION_BASE_TOKEN": "secret_base",
+                "WECHAT_COLLECTION_TABLE_ID": "secret_table",
+            },
+            clear=True,
+        ):
+            result = collect_article.diagnose_runtime()
+            text = json.dumps(result, ensure_ascii=False)
+            assert result["base_token_configured"] is True
+            assert result["table_id_configured"] is True
+            assert "secret_base" not in text
+            assert "secret_table" not in text
+            assert result["skill_version"] == collect_article.SKILL_VERSION

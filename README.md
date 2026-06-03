@@ -50,6 +50,13 @@ $env:WECHAT_COLLECTION_TABLE_ID="your_feishu_table_id"
 
 ## Usage
 
+运行前诊断：
+
+```bash
+python scripts/collect_article.py --version
+python scripts/collect_article.py --diagnose
+```
+
 收藏文章：
 
 ```bash
@@ -95,6 +102,7 @@ python -m pytest tests/ -q
 - 阅读数、点赞数、转发数不能从普通 HTML 稳定抓取；正式收藏必须从本地 CSV 命中真实统计，未命中时不会写入 Base。
 - 脚本只读取本地 CSV，不运行 exe，不上传数据。CSV 命中行如果三项统计全为 `0`，会被视为无效导出。
 - public 仓库中不要提交 `.env`、真实 Cookie、API Key 或账号密码。
+- 脚本会自动读取 `~/.hermes/.env` 和项目 `.env`，但不会打印敏感值。
 
 ## License
 

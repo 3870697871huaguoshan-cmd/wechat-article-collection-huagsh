@@ -26,6 +26,14 @@ import sys
 from dataclasses import dataclass
 from urllib.parse import parse_qs, urlparse
 
+try:
+    from runtime_env import load_env_files
+except ImportError:
+    load_env_files = None
+
+if load_env_files:
+    load_env_files()
+
 BASE_TOKEN_ENV = "WECHAT_COLLECTION_BASE_TOKEN"
 TABLE_ID_ENV = "WECHAT_COLLECTION_TABLE_ID"
 

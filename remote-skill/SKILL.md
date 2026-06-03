@@ -23,6 +23,8 @@ $env:WECHAT_DOWNLOADER_CSV="D:/path/to/export.csv"
 ## 主入口
 
 ```bash
+python scripts/collect_article.py --version
+python scripts/collect_article.py --diagnose
 python scripts/collect_article.py "https://mp.weixin.qq.com/s/..."
 python scripts/collect_article.py "https://mp.weixin.qq.com/s/..." --summary
 python scripts/collect_article.py "https://mp.weixin.qq.com/s/..." --stats-csv "D:/path/to/export.csv"
@@ -47,6 +49,8 @@ python scripts/collect_article.py "https://mp.weixin.qq.com/s/..." --stats-csv "
 
 ## 关键规则
 
+- Hermes 测试前必须先运行 `--version`，必须看到 `2026-06-03.3` 或更新。
+- 脚本自动读取 `~/.hermes/.env` 和项目 `.env`，不依赖外层 shell 注入。
 - URL 查重使用脚本内精确扫描，不依赖 `record-search` 对 URL 字段的模糊匹配。
 - 无本地真实统计 CSV 时停止写入，不用 `0` 冒充真实数据。
 - 公众号名称补不到时停止写入，不写 `待补充`。
