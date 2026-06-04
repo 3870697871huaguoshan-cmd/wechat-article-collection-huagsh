@@ -11,11 +11,10 @@ from __future__ import annotations
 
 import json
 import os
-import re
-from html import unescape
 from pathlib import Path
 from urllib.parse import parse_qs, urlencode, urlparse
-from urllib.request import Request, urlopen
+
+from ._wechat_http import http_get, http_post_json, js_var
 
 
 PROVIDER = "wechat_stats_capture"
@@ -23,11 +22,6 @@ DEFAULT_SESSION_FILES = [
     Path.home() / ".hermes" / "wechat_stats_session.json",
     Path(__file__).resolve().parents[2] / ".runtime" / "wechat_stats_session.json",
 ]
-UA = (
-    "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
-    "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
-)
-
 
 def _empty(error: str) -> dict:
     return {
@@ -82,60 +76,23 @@ def _load_session() -> dict:
     return session
 
 
-def _js_var(html: str, *names: str) -> str | None:
-    for name in names:
-        patterns = [
-            rf'var\s+{re.escape(name)}\s*=\s*["\']([^"\']*)["\']',
-            rf'{re.escape(name)}\s*:\s*["\']([^"\']*)["\']',
-        ]
-        for pattern in patterns:
-            m = re.search(pattern, html)
-            if m:
-                return unescape(m.group(1)).strip()
-    return None
-
-
 def _extract_params(url: str, html: str, session: dict) -> dict[str, str]:
     qs = parse_qs(urlparse(url).query)
     params = {
-        "__biz": (qs.get("__biz") or [None])[0] or _js_var(html, "biz", "__biz"),
-        "mid": (qs.get("mid") or [None])[0] or _js_var(html, "mid", "appmsgid"),
-        "idx": (qs.get("idx") or [None])[0] or _js_var(html, "idx", "itemidx") or "1",
-        "sn": (qs.get("sn") or [None])[0] or _js_var(html, "sn"),
+        "__biz": (qs.get("__biz") or [None])[0] or js_var(html, "biz", "__biz"),
+        "mid": (qs.get("mid") or [None])[0] or js_var(html, "mid", "appmsgid"),
+        "idx": (qs.get("idx") or [None])[0] or js_var(html, "idx", "itemidx") or "1",
+        "sn": (qs.get("sn") or [None])[0] or js_var(html, "sn"),
         "appmsg_token": (
             (qs.get("appmsg_token") or [None])[0]
             or session.get("appmsg_token")
-            or _js_var(html, "appmsg_token")
+            or js_var(html, "appmsg_token")
         ),
         "pass_ticket": (qs.get("pass_ticket") or [None])[0] or session.get("pass_ticket") or "",
         "uin": session.get("uin") or "",
         "key": session.get("key") or "",
     }
     return {k: v for k, v in params.items() if v}
-
-
-def _http_get(url: str, cookie: str) -> str:
-    req = Request(url, headers={
-        "User-Agent": UA,
-        "Referer": "https://mp.weixin.qq.com/",
-        "Cookie": cookie,
-    })
-    with urlopen(req, timeout=12) as resp:
-        return resp.read().decode("utf-8", errors="replace")
-
-
-def _http_post_json(url: str, body: dict[str, str], cookie: str, referer: str) -> dict:
-    data = urlencode(body).encode("utf-8")
-    req = Request(url, data=data, headers={
-        "User-Agent": UA,
-        "Referer": referer,
-        "Cookie": cookie,
-        "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-        "X-Requested-With": "XMLHttpRequest",
-    })
-    with urlopen(req, timeout=12) as resp:
-        text = resp.read().decode("utf-8", errors="replace")
-    return json.loads(text)
 
 
 def _pick_int(data: dict, *keys: str) -> int | None:
@@ -158,7 +115,7 @@ def fetch(url: str) -> dict:
         )
 
     try:
-        html = _http_get(url, cookie)
+        html = http_get(url, cookie)
         params = _extract_params(url, html, session)
         required = ["__biz", "mid", "idx", "sn", "appmsg_token"]
         missing = [key for key in required if not params.get(key)]
@@ -178,7 +135,7 @@ def fetch(url: str) -> dict:
             "f": "json",
         }
         ext_url = "https://mp.weixin.qq.com/mp/getappmsgext?" + urlencode(query)
-        data = _http_post_json(
+        data = http_post_json(
             ext_url,
             {"is_only_read": "1", "is_temp_url": "0", "appmsg_type": "9", "reward_uin_count": "0"},
             cookie,
@@ -199,7 +156,8 @@ def fetch(url: str) -> dict:
         if share_count is None:
             missing_stats.append("share_count")
         if missing_stats:
-            return _empty(f"stats_incomplete: missing {','.join(missing_stats)}")
+            available = ",".join(sorted(stat.keys())) or "none"
+            return _empty(f"stats_incomplete: missing {','.join(missing_stats)}; available_keys={available}")
         return _ok(read_count, like_count, share_count)
     except Exception as exc:
         return _empty(f"wechat_stats_capture_failed: {type(exc).__name__}")

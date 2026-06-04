@@ -146,8 +146,8 @@ class TestWechatSessionProvider:
         """
         response = {"base_resp": {"ret": 0}, "appmsgstat": {"read_num": 123, "like_num": 9}}
         with patch.dict("os.environ", {"WECHAT_SESSION_COOKIE": "cookie=value"}, clear=True), \
-             patch.object(wechat_session, "_http_get", return_value=html), \
-             patch.object(wechat_session, "_http_post_json", return_value=response):
+             patch.object(wechat_session, "http_get", return_value=html), \
+             patch.object(wechat_session, "http_post_json", return_value=response):
             result = wechat_session.fetch("https://mp.weixin.qq.com/s/test")
             assert result["ok"] is True
             assert result["provider"] == "wechat_session"
@@ -168,8 +168,8 @@ class TestWechatSessionProvider:
         """
         response = {"base_resp": {"ret": 0}, "appmsgstat": {"read_num": 1, "like_num": 0}}
         with patch.dict("os.environ", {"WECHAT_SESSION_COOKIE": "cookie=value", "WECHAT_WXTOKEN": "custom777"}, clear=True), \
-             patch.object(wechat_session, "_http_get", return_value=html), \
-             patch.object(wechat_session, "_http_post_json", return_value=response) as post_mock:
+             patch.object(wechat_session, "http_get", return_value=html), \
+             patch.object(wechat_session, "http_post_json", return_value=response) as post_mock:
             wechat_session.fetch("https://mp.weixin.qq.com/s/test")
             assert "wxtoken=custom777" in post_mock.call_args.args[0]
 
@@ -199,8 +199,8 @@ class TestWechatStatsCaptureProvider:
             "appmsgstat": {"read_num": 123, "like_num": 9, "share_num": 2},
         }
         with patch.dict("os.environ", {"WECHAT_SESSION_COOKIE": "cookie=value"}, clear=True), \
-             patch.object(wechat_stats_capture, "_http_get", return_value=html), \
-             patch.object(wechat_stats_capture, "_http_post_json", return_value=response):
+             patch.object(wechat_stats_capture, "http_get", return_value=html), \
+             patch.object(wechat_stats_capture, "http_post_json", return_value=response):
             result = wechat_stats_capture.fetch("https://mp.weixin.qq.com/s/test")
             assert result["ok"] is True
             assert result["provider"] == "wechat_stats_capture"
@@ -221,8 +221,8 @@ class TestWechatStatsCaptureProvider:
         """
         response = {"base_resp": {"ret": 0}, "appmsgstat": {"read_num": 123, "like_num": 9}}
         with patch.dict("os.environ", {"WECHAT_SESSION_COOKIE": "cookie=value"}, clear=True), \
-             patch.object(wechat_stats_capture, "_http_get", return_value=html), \
-             patch.object(wechat_stats_capture, "_http_post_json", return_value=response):
+             patch.object(wechat_stats_capture, "http_get", return_value=html), \
+             patch.object(wechat_stats_capture, "http_post_json", return_value=response):
             result = wechat_stats_capture.fetch("https://mp.weixin.qq.com/s/test")
             assert result["ok"] is False
             assert "share_count" in result["error"]
