@@ -42,7 +42,7 @@ class TestCollectArticle:
     def _mock_create_success(self):
         return {"ok": True, "record_id": "recNEW001", "error": None}
 
-    def _mock_stats_success(self, provider="wechat_downloader_csv"):
+    def _mock_stats_success(self, provider="wechat_stats_capture"):
         return {
             "ok": True,
             "provider": provider,
@@ -61,7 +61,7 @@ class TestCollectArticle:
              patch.object(collect_article.base_records, "search_duplicate_by_url", return_value=self._mock_dup_not_found()), \
              patch.object(collect_article.base_records, "search_duplicate_by_title", return_value=self._mock_dup_not_found()), \
              patch.object(collect_article.base_records, "create_record", return_value=self._mock_create_success()) as create_mock:
-            result = collect_article.collect_article(self.URL, topic="AI", keywords="Agent", stats_provider="wechat_downloader_csv")
+            result = collect_article.collect_article(self.URL, topic="AI", keywords="Agent", stats_provider="wechat_stats_capture")
             assert result["ok"] is True
             assert result["status"] == "created"
             assert result["title"] == "测试文章"
@@ -85,7 +85,7 @@ class TestCollectArticle:
              patch.object(collect_article.base_records, "search_duplicate_by_url", return_value=self._mock_dup_not_found()), \
              patch.object(collect_article.base_records, "search_duplicate_by_title", return_value=self._mock_dup_not_found()), \
              patch.object(collect_article.base_records, "create_record", return_value=self._mock_create_success()):
-            result = collect_article.collect_article(self.URL, stats_provider="wechat_downloader_csv")
+            result = collect_article.collect_article(self.URL, stats_provider="wechat_stats_capture")
             assert result["ok"] is True
             assert result["source"] == "作者公众号"
             enrich_mock.assert_not_called()
@@ -126,7 +126,7 @@ class TestCollectArticle:
              patch.object(collect_article.base_records, "search_duplicate_by_url", return_value=self._mock_dup_not_found()), \
              patch.object(collect_article.base_records, "search_duplicate_by_title", return_value=self._mock_dup_not_found()), \
              patch.object(collect_article.base_records, "create_record") as create_mock:
-            result = collect_article.collect_article(self.URL, stats_provider="wechat_downloader_csv")
+            result = collect_article.collect_article(self.URL, stats_provider="wechat_stats_capture")
             assert result["ok"] is False
             assert result["data_status"] == "缺公众号名称"
             create_mock.assert_not_called()
@@ -141,7 +141,7 @@ class TestCollectArticle:
              patch.object(collect_article.base_records, "search_duplicate_by_url", return_value=self._mock_dup_not_found()), \
              patch.object(collect_article.base_records, "search_duplicate_by_title", return_value=self._mock_dup_not_found()), \
              patch.object(collect_article.base_records, "create_record", return_value=self._mock_create_success()):
-            result = collect_article.collect_article(self.URL, stats_provider="wechat_downloader_csv")
+            result = collect_article.collect_article(self.URL, stats_provider="wechat_stats_capture")
             assert result["ok"] is True
             assert result["source"] == "搜狗公众号"
 
@@ -154,7 +154,7 @@ class TestCollectArticle:
              patch.object(collect_article.base_records, "search_duplicate_by_url", return_value=self._mock_dup_not_found()), \
              patch.object(collect_article.base_records, "search_duplicate_by_title", return_value=self._mock_dup_not_found()), \
              patch.object(collect_article.base_records, "create_record") as create_mock:
-            result = collect_article.collect_article(self.URL, stats_provider="wechat_downloader_csv")
+            result = collect_article.collect_article(self.URL, stats_provider="wechat_stats_capture")
             assert result["ok"] is False
             assert result["data_status"] == "缺公众号名称"
             create_mock.assert_not_called()
@@ -211,12 +211,12 @@ class TestCollectArticle:
              patch.object(collect_article.base_records, "search_duplicate_by_url", return_value=self._mock_dup_not_found()), \
              patch.object(collect_article.base_records, "search_duplicate_by_title", return_value=self._mock_dup_not_found()), \
              patch.object(collect_article.base_records, "create_record", return_value={"ok": False, "error": "502"}):
-            result = collect_article.collect_article(self.URL, stats_provider="wechat_downloader_csv")
+            result = collect_article.collect_article(self.URL, stats_provider="wechat_stats_capture")
             assert result["ok"] is False
             assert result["status"] == "failed"
 
     def test_missing_stats_provider_stops_write(self):
-        """用例: 未准备统计 CSV → 停止写入，不写 0，并给出操作路径"""
+        """用例: 未初始化统计授权 → 停止写入，不写 0，并给出操作路径"""
         with patch.object(collect_article.fetch_meta, "fetch_meta", return_value=self._mock_meta()), \
              patch.object(collect_article.base_records, "search_duplicate_by_url", return_value=self._mock_dup_not_found()), \
              patch.object(collect_article.base_records, "search_duplicate_by_title", return_value=self._mock_dup_not_found()), \
@@ -225,8 +225,7 @@ class TestCollectArticle:
                 result = collect_article.collect_article(self.URL)
             assert result["ok"] is False
             assert result["data_status"] == "统计获取失败"
-            assert "微信公众号批量下载工具3.9" in result["message"]
-            assert "--stats-csv" in result["message"]
+            assert "init_wechat_stats_capture.py" in result["message"]
             create_mock.assert_not_called()
 
     def test_explicit_none_still_stops_write(self):
@@ -238,21 +237,20 @@ class TestCollectArticle:
             result = collect_article.collect_article(self.URL, stats_provider="none")
             assert result["ok"] is False
             assert result["data_status"] == "统计获取失败"
-            assert "stats_csv_required" in result["message"]
+            assert "stats_authorization_required" in result["message"]
             create_mock.assert_not_called()
 
-    def test_stats_csv_argument_sets_env_and_collects(self):
-        """用例: stats_csv 参数会配置 CSV 路径并完成写入"""
+    def test_default_stats_capture_provider_collects(self):
+        """用例: 默认调用自建统计采集器并完成写入"""
         with patch.object(collect_article.fetch_meta, "fetch_meta", return_value=self._mock_meta()), \
              patch.object(collect_article.fetch_stats, "fetch_stats", return_value=self._mock_stats_success()) as stats_mock, \
              patch.object(collect_article.base_records, "search_duplicate_by_url", return_value=self._mock_dup_not_found()), \
              patch.object(collect_article.base_records, "search_duplicate_by_title", return_value=self._mock_dup_not_found()), \
              patch.object(collect_article.base_records, "create_record", return_value=self._mock_create_success()):
             with patch.dict("os.environ", {}, clear=True):
-                result = collect_article.collect_article(self.URL, stats_csv="D:/export.csv")
+                result = collect_article.collect_article(self.URL)
                 assert result["ok"] is True
-                assert os.environ["WECHAT_DOWNLOADER_CSV"] == "D:/export.csv"
-                assert stats_mock.call_args.kwargs["provider"] == "wechat_downloader_csv"
+                assert stats_mock.call_args.kwargs["provider"] == "wechat_stats_capture"
 
 
 class TestSummaryFallback:

@@ -21,8 +21,8 @@ python scripts/collect_article.py --diagnose
 # 收藏并总结
 python scripts/collect_article.py "https://mp.weixin.qq.com/s/..." --summary
 
-# 用户按提示导出统计 CSV 后，带 CSV 路径重跑
-python scripts/collect_article.py "https://mp.weixin.qq.com/s/..." --stats-csv "D:/path/to/export.csv"
+# 统计授权初始化（仅在 --diagnose 显示未初始化时执行）
+python scripts/init_wechat_stats_capture.py
 
 # 运行测试
 python -m pytest tests/ -v
@@ -30,16 +30,16 @@ python -m pytest tests/ -v
 
 ## 核心原则
 
-- **先确认版本** — Hermes 测试前先运行 `--version`，必须看到 `2026-06-03.3` 或更新
+- **先确认版本** — Hermes 测试前先运行 `--version`，必须看到 `2026-06-04.1` 或更新
 - **脚本自加载环境** — 自动读取 `~/.hermes/.env`、项目 `.env`，不依赖外层 shell 注入
 - **不重复收藏** — 写入前两级查重（链接 → 标题）
 - **URL 字段格式正确** — `lark-cli base +record-upsert` 传字符串，不混用 `{link,text}`
 - **统计数据不误判** — 未获取到真实阅读/点赞/转发数时停止写入，不用 `0` 冒充成功
 - **字段不缺失** — 公众号名称补不到时停止写入，不写 `"待补充"`
-- **失败有明确原因** — 返回结构化错误，调用方按提示补齐授权或 CSV
+- **失败有明确原因** — 返回结构化错误，调用方按提示完成一次性统计授权初始化
 
 永久限制：
-- 阅读数、点赞数、转发数不能从普通 HTML 抓取。正式流程固定使用本地真实统计 CSV；不要向用户展示技术方案列表。
+- 阅读数、点赞数、转发数不以普通 HTML 作为统计来源；正式流程固定调用本技能自建的微信统计采集器。
 - 正文内容不稳定。`wechat-article-extractor` 常因登录态返回 `1005`，仅用于 Summary Mode。
 - 公众号名称优先从 `var nickname` 获取；短链页常见兜底是 `<meta name="author">` / `og:article:author`；仍失败才走搜索补全；补不到则不写入。
 
@@ -62,14 +62,13 @@ Hermes `.env` 示例：
 ```text
 WECHAT_COLLECTION_BASE_TOKEN=your_feishu_base_token
 WECHAT_COLLECTION_TABLE_ID=your_feishu_table_id
-WECHAT_DOWNLOADER_CSV=D:/path/to/export.csv
 ```
 
 配置后运行 `python scripts/collect_article.py --diagnose`，确认：
 
 - `base_token_configured: true`
 - `table_id_configured: true`
-- 如已准备统计 CSV，`stats_csv_exists: true`
+- `stats_authorization_configured: true`
 
 ## 脚本清单
 
@@ -80,6 +79,8 @@ WECHAT_DOWNLOADER_CSV=D:/path/to/export.csv
 | `scripts/search_enrich.py` | wechat-article-search 补公众号名称 | nickname 缺失时 collect_article 内部调用 |
 | `scripts/base_records.py` | 飞书 Base 查重/写入/更新 | collect_article 内部调用 |
 | `scripts/fetch_stats.py` | 统计数据获取入口 | collect_article 内部调用 |
+| `scripts/providers/wechat_stats_capture.py` | 自建微信统计采集器 | collect_article 默认调用 |
+| `scripts/init_wechat_stats_capture.py` | 一次性统计授权初始化 | 仅在诊断显示未初始化时调用 |
 
 ## 主流程
 
@@ -90,7 +91,7 @@ WECHAT_DOWNLOADER_CSV=D:/path/to/export.csv
      ├─ fetch_meta: curl ×2 (换UA, 10s超时，nickname/author 兜底)
      ├─ search_enrich: nickname 缺失时搜狗补全
      ├─ base_records: 两级查重 (链接精确扫描→标题精确扫描)
-     ├─ fetch_stats: 读取本地真实统计 CSV
+     ├─ fetch_stats: 调用自建微信统计采集器
      ├─ base_records: +record-upsert 写入
      └─ --summary: extractor → og:description 降级
 ```
@@ -120,9 +121,9 @@ python scripts/base_records.py check-title "文章标题"
 | 文章链接 | 文本(URL) | 用户提供的链接，传字符串 |
 | 主题关键词 | 文本 | 用户指定或自动提取 |
 | 文章关键词 | 文本 | 用户指定或自动提取 |
-| 阅读数 | 数字 | 本地统计 CSV 返回真实值；未命中则停止写入 |
-| 点赞数 | 数字 | 本地统计 CSV 返回真实值；未命中则停止写入 |
-| 转发数 | 数字 | 本地统计 CSV 返回真实值；未命中则停止写入 |
+| 阅读数 | 数字 | 自建统计采集器返回真实值；未命中则停止写入 |
+| 点赞数 | 数字 | 自建统计采集器返回真实值；未命中则停止写入 |
+| 转发数 | 数字 | 自建统计采集器返回真实值；未命中则停止写入 |
 | 收藏时间 | 日期 | 脚本写当前时间 |
 | 统计来源 | 单选 | 写入现有选项 `wechat_session` |
 | 统计更新时间 | 日期 | 脚本每次写入统计字段时写当前时间 |
@@ -132,22 +133,12 @@ python scripts/base_records.py check-title "文章标题"
 
 不要给用户选择题。Hermes 只执行这一条路径：
 
-1. 先运行 `python scripts/collect_article.py "<文章链接>"`。
-2. 如果脚本返回 `统计获取失败`，把脚本 message 原样反馈给用户，让用户按提示操作“微信公众号批量下载工具3.9”。
-3. 用户导出 CSV 后，运行 `python scripts/collect_article.py "<文章链接>" --stats-csv "<CSV路径>"`。
-4. 脚本从 CSV 中按 URL 匹配目标文章，读取 `read_num` / `like_num` / `share_num`，再写入 Base。
+1. 运行 `python scripts/collect_article.py --diagnose`。
+2. 如果 `stats_authorization_configured=false`，运行 `python scripts/init_wechat_stats_capture.py` 完成一次性统计授权初始化。
+3. 运行 `python scripts/collect_article.py "<文章链接>"`。
+4. 脚本自动提取文章参数，调用 `wechat_stats_capture` 获取 `read_num` / `like_num` / `share_num`，再写入 Base。
 
-用户侧操作提示固定为：
-
-1. 打开“微信公众号批量下载工具3.9”。
-2. 将目标文章链接粘贴到工具，点击“1.获取公众号id”。
-3. 按工具提示在微信桌面客户端内打开生成链接，等待“获取密钥成功”。
-4. 点击“2.批量下载文章”或“2.导出文章数据”，导出文章数据 CSV。
-5. 把 CSV 路径交给 Hermes，Hermes 用 `--stats-csv` 重跑收藏。
-
-CSV 必须含 `title,url,time,like_num,read_num,share_num,comment_count`。匹配优先按 URL；短链和 `/s?__biz=...&mid=...&idx=...&sn=...` 会做规范化匹配。命中行如果三项统计全为 `0`，视为无效导出，不写 Base。
-
-合规与风控：只读取用户本机导出的 CSV；不运行 exe；不上传 Cookie、密钥或 CSV；不无限循环采集；一次只处理当前用户请求的文章。
+合规与风控：只使用用户本机授权态；不调用付费第三方 API；不上传 Cookie、密钥或统计数据；不无限循环采集；一次只处理当前用户请求的文章。
 
 ## 公众号名称补全
 

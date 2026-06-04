@@ -3,7 +3,7 @@
 collect_article.py — 微信公众号文章收藏主入口
 
 用法:
-    python collect_article.py <url> [--topic <主题>] [--keywords <关键词>] [--summary] [--stats-csv <CSV路径>]
+    python collect_article.py <url> [--topic <主题>] [--keywords <关键词>] [--summary]
 
 流程:
     1. fetch_meta       → og:title / og:description / nickname
@@ -44,7 +44,7 @@ import search_enrich
 import base_records
 import fetch_stats
 
-SKILL_VERSION = "2026-06-03.3"
+SKILL_VERSION = "2026-06-04.1"
 LOADED_ENV_FILES = load_env_files()
 
 
@@ -113,30 +113,25 @@ def _stats_error_message(error: str | None) -> str:
     details = error or "unknown"
     return (
         "无法收藏：未获取到真实阅读/点赞/转发数据，已停止写入。\n"
-        "下一步请按固定采集路径处理：\n"
-        "1. 打开“微信公众号批量下载工具3.9”。\n"
-        "2. 将目标文章链接粘贴到工具，点击“1.获取公众号id”。\n"
-        "3. 按工具提示在微信桌面客户端内打开生成链接，等待“获取密钥成功”。\n"
-        "4. 点击“2.批量下载文章”或“2.导出文章数据”，导出包含 read_num/like_num/share_num 的 CSV。\n"
-        "5. 重新运行本脚本，并传入 --stats-csv <CSV路径>。\n"
+        "下一步由本技能完成统计授权初始化：\n"
+        "1. 运行 python scripts/init_wechat_stats_capture.py 完成一次性微信统计授权保存。\n"
+        "2. 再运行 python scripts/collect_article.py <文章链接>，脚本会自动采集统计并写入 Base。\n"
         f"当前错误：{details}"
     )
 
 
 def diagnose_runtime() -> dict:
-    csv_path = os.environ.get("WECHAT_DOWNLOADER_CSV")
-    csv_dir = os.environ.get("WECHAT_DOWNLOADER_CSV_DIR")
+    session_file = os.environ.get("WECHAT_STATS_SESSION_FILE") or os.path.expanduser("~/.hermes/wechat_stats_session.json")
     return {
         "ok": True,
         "skill_version": SKILL_VERSION,
         "loaded_env_files": LOADED_ENV_FILES,
         "base_token_configured": bool(os.environ.get("WECHAT_COLLECTION_BASE_TOKEN")),
         "table_id_configured": bool(os.environ.get("WECHAT_COLLECTION_TABLE_ID")),
-        "stats_csv_configured": bool(csv_path),
-        "stats_csv_exists": bool(csv_path and os.path.isfile(os.path.expanduser(csv_path))),
-        "stats_csv_dir_configured": bool(csv_dir),
-        "stats_csv_dir_exists": bool(csv_dir and os.path.isdir(os.path.expanduser(csv_dir))),
-        "default_stats_flow": "local_csv",
+        "stats_authorization_configured": bool(os.environ.get("WECHAT_SESSION_COOKIE") or os.path.isfile(os.path.expanduser(session_file))),
+        "stats_session_file": session_file,
+        "stats_session_file_exists": os.path.isfile(os.path.expanduser(session_file)),
+        "default_stats_flow": "wechat_stats_capture",
     }
 
 
@@ -151,7 +146,7 @@ def _stats_fields(url: str, provider: str, fallback_chain: str | None = None) ->
             "share_count": 0,
             "confidence": "none",
             "partial": False,
-            "error": "stats_csv_required",
+            "error": "stats_authorization_required",
         }
 
     stats = fetch_stats.fetch_stats(url, provider=provider, fallback_chain=fallback_chain)
@@ -159,10 +154,10 @@ def _stats_fields(url: str, provider: str, fallback_chain: str | None = None) ->
         return {}, stats
 
     stats_source = stats.get("provider") or provider
-    if stats_source == "wechat_downloader_csv":
+    if stats_source == "wechat_stats_capture":
         # The Base field is an existing single-select. Keep using the existing
-        # wechat_session option because the CSV is produced from a WeChat
-        # desktop-session credential flow.
+        # wechat_session option because stats are captured from local WeChat
+        # authorization rather than a separate Base option.
         stats_source = "wechat_session"
 
     fields = {
@@ -183,7 +178,6 @@ def collect_article(
     summary: bool = False,
     stats_provider: str | None = None,
     fallback_chain: str | None = None,
-    stats_csv: str | None = None,
 ) -> dict:
     """收藏一篇微信文章"""
     try:
@@ -273,9 +267,7 @@ def collect_article(
         }
 
     # Step 4: 写入
-    if stats_csv:
-        os.environ["WECHAT_DOWNLOADER_CSV"] = stats_csv
-    stats_provider = stats_provider or os.environ.get("WECHAT_STATS_PROVIDER", "wechat_downloader_csv")
+    stats_provider = stats_provider or os.environ.get("WECHAT_STATS_PROVIDER", "wechat_stats_capture")
     fallback_chain = fallback_chain or os.environ.get("WECHAT_STATS_FALLBACK_CHAIN")
     topic = topic or _auto_topic(meta["title"], meta.get("description") or "")
     keywords = keywords or _auto_keywords(meta["title"], meta.get("description") or "")
@@ -384,7 +376,6 @@ def main():
     parser.add_argument("--topic", default="", help="主题关键词")
     parser.add_argument("--keywords", default="", help="文章关键词")
     parser.add_argument("--summary", action="store_true", help="同时生成摘要")
-    parser.add_argument("--stats-csv", default=None, help="本地下载工具导出的文章数据 CSV 路径")
     parser.add_argument("--version", action="store_true", help="输出技能版本")
     parser.add_argument("--diagnose", action="store_true", help="输出运行环境诊断")
     parser.add_argument("--stats-provider", default=None, help=argparse.SUPPRESS)
@@ -407,7 +398,6 @@ def main():
         args.summary,
         args.stats_provider,
         args.fallback_chain,
-        args.stats_csv,
     )
     print(json.dumps(result, ensure_ascii=False, indent=2))
     sys.exit(0 if result["ok"] else 1)

@@ -7,7 +7,7 @@
 - 主入口：`scripts/collect_article.py`
 - 两级查重：文章链接 -> 文章标题
 - 飞书 Base 写入：`lark-cli base +record-upsert`
-- 固定真实统计路径：读取本地导出的文章数据 CSV
+- 固定真实统计路径：自建微信统计采集器
 - Summary Mode：先收藏，再尝试摘要；摘要失败不阻塞收藏
 - 回归测试：`tests/`
 
@@ -36,8 +36,7 @@
 |---|---|
 | `LARK_CLI_BIN` | 指定 `lark-cli` 可执行文件路径 |
 | `WECHAT_ARTICLE_EXTRACTOR_DIR` | Summary Mode 的 extractor 脚本目录 |
-| `WECHAT_DOWNLOADER_CSV` | 微信公众号批量下载工具导出的 CSV 文件 |
-| `WECHAT_DOWNLOADER_CSV_DIR` | CSV 导出目录；未设置 `WECHAT_DOWNLOADER_CSV` 时读取最新 CSV |
+| `WECHAT_STATS_SESSION_FILE` | 可选：本地微信统计授权文件路径 |
 
 说明：写入 Base 的 `统计来源` 使用现有选项 `wechat_session`，不要求新增 Base 字段或选项。
 
@@ -69,19 +68,11 @@ python scripts/collect_article.py "https://mp.weixin.qq.com/s/..."
 python scripts/collect_article.py "https://mp.weixin.qq.com/s/..." --summary
 ```
 
-用户导出 CSV 后重跑：
-
-```powershell
-python scripts/collect_article.py "https://mp.weixin.qq.com/s/..." --stats-csv "D:/path/to/export.csv"
-```
-
 固定真实统计采集路径：
 
-1. 打开“微信公众号批量下载工具3.9”。
-2. 将目标文章链接粘贴到工具，点击“1.获取公众号id”。
-3. 按工具提示在微信桌面客户端内打开生成链接，等待“获取密钥成功”。
-4. 点击“2.批量下载文章”或“2.导出文章数据”，导出文章数据 CSV。
-5. 使用 `--stats-csv` 带 CSV 路径重跑收藏。
+1. 运行 `python scripts/collect_article.py --diagnose`。
+2. 如果统计授权未初始化，运行 `python scripts/init_wechat_stats_capture.py`。
+3. 运行 `python scripts/collect_article.py "<文章链接>"`，脚本自动采集统计并写入 Base。
 
 运行测试：
 
@@ -99,8 +90,8 @@ python -m pytest tests/ -q
 
 ## Security Notes
 
-- 阅读数、点赞数、转发数不能从普通 HTML 稳定抓取；正式收藏必须从本地 CSV 命中真实统计，未命中时不会写入 Base。
-- 脚本只读取本地 CSV，不运行 exe，不上传数据。CSV 命中行如果三项统计全为 `0`，会被视为无效导出。
+- 阅读数、点赞数、转发数不以普通 HTML 作为统计来源；正式收藏必须由自建统计采集器获取真实数据，未命中时不会写入 Base。
+- 脚本不调用付费第三方 API，不要求用户导出 CSV，不上传 Cookie、密钥或统计数据。
 - public 仓库中不要提交 `.env`、真实 Cookie、API Key 或账号密码。
 - 脚本会自动读取 `~/.hermes/.env` 和项目 `.env`，但不会打印敏感值。
 
